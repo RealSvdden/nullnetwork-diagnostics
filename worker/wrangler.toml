@@ -33,7 +33,14 @@ simple = { limit = 3, period = 60 }
 name = "RL_UPLOAD"
 type = "ratelimit"
 namespace_id = "2002"
-simple = { limit = 4, period = 60 }
+simple = { limit = 6, period = 60 }
+
+# File PUTs + complete: a capture is up to 4 requests back to back, with retries.
+[[unsafe.bindings]]
+name = "RL_FILES"
+type = "ratelimit"
+namespace_id = "2004"
+simple = { limit = 30, period = 60 }
 
 [[unsafe.bindings]]
 name = "RL_PUBLIC"

@@ -16,7 +16,8 @@ class Updater extends EventEmitter {
     this.timer = null;
   }
 
-  get enabled() { return app.isPackaged && !!this.store.effectiveEndpoint; }
+  // Feed = baked endpoint only, https only (effectiveEndpoint already enforces both).
+  get enabled() { return app.isPackaged && /^https:/.test(this.store.effectiveEndpoint); }
 
   start() {
     if (!this.enabled) { this.set({ status: 'disabled' }); return; }

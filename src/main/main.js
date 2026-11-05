@@ -60,6 +60,9 @@ function createWindow() {
     win.hide();
   });
   win.webContents.setWindowOpenHandler(({ url }) => { openExternal(url); return { action: 'deny' }; });
+  // The renderer is a local file and must stay one: no navigation anywhere.
+  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  win.webContents.on('will-redirect', (e) => e.preventDefault());
 }
 
 function showWindow() {
@@ -172,11 +175,18 @@ async function shareIncident(id, { note = '', playerTag, auto = false } = {}) {
   const files = fs.readdirSync(inc.dir).filter((f) => f !== 'report.json').map((f) => ({ path: path.join(inc.dir, f) }));
 
   try {
-    const dev = await device.ensure(endpoint);
-    const res = await uploadCapture({
-      endpoint, device: dev, meta, files,
-      onProgress: (p) => broadcast('upload:progress', { id, ...p }),
-    });
+    let res;
+    try {
+      const dev = await device.ensure(endpoint);
+      res = await uploadCapture({ endpoint, device: dev, meta, files, onProgress: (p) => broadcast('upload:progress', { id, ...p }) });
+    } catch (err) {
+      // A rotated master key or a wiped device row answers "bad signature" / "unknown device":
+      // register once more and retry. A revoked install (403) is never retried.
+      if (!/bad signature|unknown device/i.test(String(err && err.message))) throw err;
+      device.forget();
+      const dev = await device.ensure(endpoint);
+      res = await uploadCapture({ endpoint, device: dev, meta, files, onProgress: (p) => broadcast('upload:progress', { id, ...p }) });
+    }
     store.updateIncident(id, { share: { status: 'shared', at: new Date().toISOString(), ref: res.ref } });
     store.addEvent('shared', { id, ref: res.ref });
   } catch (err) {
@@ -213,6 +223,7 @@ function capturesSize() {
 
 function probeEndpoint(endpoint) {
   return new Promise((resolve) => {
+    if (!endpoint) return resolve({ ok: false, error: 'Sharing is not configured in this build' });
     let url; try { url = new URL('/health', endpoint); } catch { return resolve({ ok: false, error: 'Not a valid URL' }); }
     const lib = url.protocol === 'http:' ? http : https;
     const req = lib.get(url, { timeout: 8000 }, (res) => { res.resume(); resolve({ ok: res.statusCode < 400, status: res.statusCode }); });
@@ -251,7 +262,6 @@ ipcMain.handle('settings:set', (_e, patch) => {
     const m = modules.get('crash'); if (m) m.reconfigure();
   }
   if (after.keepDays !== before.keepDays) purgeOld();
-  if (after.shareEndpoint !== before.shareEndpoint) { updater.stop(); updater.start(); }
   refreshTray();
   return after;
 });
@@ -276,7 +286,7 @@ ipcMain.handle('app:pickFivemPath', async () => {
   const r = await dialog.showOpenDialog(win, { title: 'Pick your FiveM.app folder', properties: ['openDirectory'], defaultPath: fivem.defaultAppDir() });
   return r.canceled ? null : r.filePaths[0];
 });
-ipcMain.handle('app:probeEndpoint', (_e, endpoint) => probeEndpoint(endpoint || store.effectiveEndpoint));
+ipcMain.handle('app:probeEndpoint', () => probeEndpoint(store.effectiveEndpoint));
 ipcMain.handle('window:hide', () => win && win.hide());
 ipcMain.handle('update:check', () => updater.check());
 ipcMain.handle('update:download', () => updater.download());

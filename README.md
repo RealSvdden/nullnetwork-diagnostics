@@ -38,6 +38,7 @@ Needs Node.js 20+ on Windows. `npm run dist` also writes `dist\latest.yml` with 
 Dev helpers:
 
 - `NN_USER_DATA=<dir>` runs against a clean profile (settings, history, captures under that dir).
+- `NN_SHARE_ENDPOINT=http://127.0.0.1:8787` points a dev run at a local worker. There is no in-app setting for this on purpose: the endpoint also decides where updates come from, so it is baked into the build (`app.config.json`) and must be https.
 - Settings > FiveM > Change folder can point at any folder with `crashes\` and `logs\` subfolders, so you can test by dropping an old `.dmp` in.
 - `npm start -- --remote-debugging-port=9222` exposes the renderer to DevTools.
 
@@ -69,6 +70,7 @@ The worker in `worker/` is everything the app talks to. It is designed so that n
 - **Limits.** Burst limits per IP and per device at the edge; 5 registrations per IP per hour, 6 uploads per device per hour, 12 per day, 512 MiB per day from the database.
 - **No read path.** There is no endpoint that returns a capture. The bucket is private; staff read reports through the admin panel behind its own permissions.
 - **Public surface.** `GET /` (this download page), `GET /health`, and `GET /v1/update/<file>` (the update feed), all read-only and rate limited.
+- **Pinned endpoint.** The endpoint is compiled into the installer and cannot be changed from the app, so neither uploads nor updates can be redirected by editing a setting.
 
 ## Updates
 

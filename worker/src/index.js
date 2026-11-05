@@ -58,11 +58,11 @@ const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
 const int = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.round(Number(v)))) : null);
 
 async function deviceSecret(env, deviceId) { return b64url(await hmac(env.DEVICE_MASTER_KEY, `device:${deviceId}`)); }
-async function ipHash(env, ip) { return (await sha256(`${env.IP_SALT || env.DEVICE_MASTER_KEY}|${ip || ''}`)).slice(0, 32); }
+async function ipHash(env, ip) { return (await sha256(`${env.IP_SALT}|${ip || ''}`)).slice(0, 32); }
 
 async function rateLimit(binding, key) {
-  if (!binding) return true;
-  try { return (await binding.limit({ key })).success; } catch { return true; }
+  if (!binding) return true; // local dev without the binding
+  try { return (await binding.limit({ key })).success; } catch (err) { console.error('ratelimit binding failed', String(err)); return false; }
 }
 
 // Verify a signed request. Returns { device } or a Response to send.
@@ -201,13 +201,17 @@ async function declare(req, env, url) {
   if (typeof files === 'string') return deny(400, files);
   const total = files.reduce((a, f) => a + f.size, 0);
 
-  // Hourly + daily quotas per device.
-  const lastHour = await env.DB.prepare('SELECT COUNT(*) AS n FROM diag_captures WHERE device_id = ?1 AND created_at > ?2').bind(device.device_id, now() - 3600).first();
-  if (lastHour && lastHour.n >= HOURLY_UPLOADS) return deny(429, 'too many uploads this hour; try again later');
-  const today = dayOf(now());
-  const dayUploads = device.day === today ? device.day_uploads : 0;
-  const dayBytes = device.day === today ? device.day_bytes : 0;
-  if (dayUploads >= DAILY_UPLOADS || dayBytes + total > DAILY_BYTES) return deny(429, 'daily sharing limit reached');
+  // Hourly + daily quotas per device, counted from what was DECLARED (open or complete),
+  // so abandoning a capture after the PUTs cannot bypass the caps.
+  const t0 = now();
+  const usage = await env.DB.prepare(`SELECT
+      SUM(CASE WHEN created_at > ?2 THEN 1 ELSE 0 END) AS hour_n,
+      SUM(CASE WHEN created_at > ?3 THEN 1 ELSE 0 END) AS day_n,
+      SUM(CASE WHEN created_at > ?3 THEN size_bytes ELSE 0 END) AS day_bytes
+    FROM diag_captures WHERE device_id = ?1 AND created_at > ?3`).bind(device.device_id, t0 - 3600, t0 - 86400).first();
+  if (usage && Number(usage.hour_n) >= HOURLY_UPLOADS) return deny(429, 'too many uploads this hour; try again later');
+  if (usage && (Number(usage.day_n) >= DAILY_UPLOADS || Number(usage.day_bytes) + total > DAILY_BYTES)) return deny(429, 'daily sharing limit reached');
+  const today = dayOf(t0);
 
   if (Math.random() < 0.05) await pruneOpen(env);
 
@@ -233,7 +237,18 @@ async function loadOpen(env, ref, deviceId) {
   return { ...row, files: JSON.parse(row.files), filesDone: JSON.parse(row.files_done) };
 }
 
+// Shape checks + per-device burst limit that run before the nonce write, so a
+// loop of garbage requests costs nothing in D1.
+async function preflight(req, env, ref) {
+  if (!/^\d{8}-[0-9a-f]{12}$/.test(ref)) return deny(404, 'no open capture');
+  const dev = req.headers.get('X-NN-Device') || '';
+  if (!/^[0-9a-f]{32}$/.test(dev)) return deny(401, 'unsigned');
+  if (!(await rateLimit(env.RL_FILES, `file:${dev}`))) return deny(429, 'slow down');
+  return null;
+}
+
 async function putFile(req, env, url, ref, name) {
+  const pre = await preflight(req, env, ref); if (pre) return pre;
   const claimed = (req.headers.get('X-NN-Sha256') || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(claimed)) return deny(400, 'missing sha256');
   const auth = await authenticate(req, env, url, claimed);
@@ -270,6 +285,7 @@ async function putFile(req, env, url, ref, name) {
 }
 
 async function complete(req, env, url, ref) {
+  const pre = await preflight(req, env, ref); if (pre) return pre;
   const body = await readJson(req, 1024);
   if (!body) return deny(400, 'bad body');
   const auth = await authenticate(req, env, url, await sha256(body.raw));
@@ -304,7 +320,9 @@ async function serveUpdate(req, env, file) {
   headers.set('ETag', obj.httpEtag);
   headers.set('Accept-Ranges', 'bytes');
   if (ranged && obj.range) {
-    const r = obj.range; const start = r.offset || 0; const end = r.length ? start + r.length - 1 : obj.size - 1;
+    const r = obj.range;
+    const start = r.suffix != null ? Math.max(0, obj.size - r.suffix) : (r.offset || 0);
+    const end = r.suffix != null ? obj.size - 1 : (r.length ? start + r.length - 1 : obj.size - 1);
     headers.set('Content-Range', `bytes ${start}-${end}/${obj.size}`);
     headers.set('Content-Length', String(end - start + 1));
   } else headers.set('Content-Length', String(obj.size));
@@ -319,11 +337,14 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const p = url.pathname;
-    if (!env.DEVICE_MASTER_KEY) return deny(503, 'not configured');
+    if (!env.DEVICE_MASTER_KEY || !env.IP_SALT) return deny(503, 'not configured');
     try {
       if (p === '/health') return new Response('ok', { headers: { 'Cache-Control': 'no-store' } });
       if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/' || p === '/diagnostics' || p === '/download')) return downloadPage(env);
-      if ((req.method === 'GET' || req.method === 'HEAD') && p.startsWith('/v1/update/')) return serveUpdate(req, env, decodeURIComponent(p.slice('/v1/update/'.length)));
+      if ((req.method === 'GET' || req.method === 'HEAD') && p.startsWith('/v1/update/')) {
+        let file; try { file = decodeURIComponent(p.slice('/v1/update/'.length)); } catch { return new Response('not found', { status: 404 }); }
+        return serveUpdate(req, env, file);
+      }
       if (req.method === 'POST' && p === '/v1/register') return register(req, env);
       if (req.method === 'POST' && p === '/v1/capture') return declare(req, env, url);
       let m;

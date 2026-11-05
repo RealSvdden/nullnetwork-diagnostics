@@ -165,12 +165,9 @@
           </div>
 
           <div class="card span2">
-            <h3>Advanced</h3>
-            <div class="field">
-              <label for="endpoint">Share endpoint</label>
-              <div class="inline grow"><input id="endpoint" type="url" placeholder="Set by the server team in release builds"><button class="btn ghost" id="probeBtn">Test</button></div>
-              <small class="muted" id="probeResult">Leave empty to use the endpoint built into this release.</small>
-            </div>
+            <h3>Connection</h3>
+            <div class="kv"><span>Share endpoint</span><code id="endpoint"></code></div>
+            <div class="inline"><button class="btn ghost" id="probeBtn">Test connection</button><small class="muted" id="probeResult">Built into this release and not editable, so nobody can redirect your reports or updates.</small></div>
           </div>
 
           <div class="card span2 about">

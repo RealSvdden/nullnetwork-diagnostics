@@ -11,7 +11,6 @@ const SETTINGS_DEFAULTS = Object.freeze({
   launchAtStartup: false,
   startMinimized: false,
   keepDays: 14,              // local retention for captures that were shared or declined
-  shareEndpoint: '',         // '' -> use app.config.json
   fivemPath: '',             // '' -> auto (%LOCALAPPDATA%\FiveM\FiveM.app)
   notifications: true,
   onboarded: false,
@@ -52,14 +51,33 @@ class Store {
     return { serverName: 'the Nullnetwork team', shareEndpoint: '', discordInvite: '' };
   }
 
+  // The share endpoint (and therefore the update feed) is baked into the build and
+  // is never user-editable: a URL a player could be talked into pasting would also
+  // decide where "Update now" downloads from. NN_SHARE_ENDPOINT is for development.
   get effectiveEndpoint() {
-    return (this.settings.shareEndpoint || this.appConfig.shareEndpoint || '').trim();
+    const raw = (process.env.NN_SHARE_ENDPOINT || this.appConfig.shareEndpoint || '').trim();
+    if (!raw) return '';
+    try {
+      const u = new URL(raw);
+      const devHttp = process.env.NN_SHARE_ENDPOINT && u.hostname === '127.0.0.1';
+      if (u.protocol !== 'https:' && !devHttp) return '';
+      return u.origin;
+    } catch { return ''; }
   }
 
+  // Renderer-supplied settings: only known keys, only the expected shape.
   setSettings(patch) {
-    for (const k of Object.keys(patch)) {
-      if (!(k in SETTINGS_DEFAULTS)) continue;
-      this.settings[k] = patch[k];
+    const p = patch && typeof patch === 'object' ? patch : {};
+    for (const k of Object.keys(p)) {
+      if (!Object.hasOwn(SETTINGS_DEFAULTS, k)) continue;
+      const v = p[k];
+      switch (k) {
+        case 'sharePolicy': if (['ask', 'always', 'never'].includes(v)) this.settings[k] = v; break;
+        case 'playerTag': if (typeof v === 'string') this.settings[k] = v.slice(0, 64); break;
+        case 'fivemPath': if (typeof v === 'string' && v.length < 1024 && !v.includes('\0')) this.settings[k] = v; break;
+        case 'keepDays': if (Number.isFinite(Number(v))) this.settings[k] = Math.min(365, Math.max(1, Math.round(Number(v)))); break;
+        default: if (typeof v === 'boolean') this.settings[k] = v;
+      }
     }
     writeJson(this.settingsFile, this.settings);
     return this.settings;

@@ -129,7 +129,7 @@ function renderCaptures() {
           <div class="row-title">${esc(i.title)}</div>
           <div class="row-sub">${fmtTime(i.at)} · ${i.purged ? 'files removed' : fmtBytes(i.totalBytes)}${i.note ? ' · ' + esc(i.note) : ''}</div>
         </div>
-        <span class="status ${st}">${statusLabel[st] || st}${st === 'uploading' ? pct : ''}</span>
+        <span class="status ${esc(st)}">${esc(statusLabel[st] || st)}${st === 'uploading' ? esc(pct) : ''}</span>
         <div class="row-actions">${actions.join('')}</div>
       </div>
       <div class="capture-detail">
@@ -226,8 +226,7 @@ function renderSettings() {
   $('capturesBytes').textContent = fmtBytes(S.capturesBytes);
   $('capturesDir').textContent = S.capturesDir;
   $('capturesDir').title = S.capturesDir;
-  $('endpoint').value = s.shareEndpoint || '';
-  $('endpoint').placeholder = S.appConfig.hasBuiltIn ? 'Using the endpoint built into this release' : 'Set by the server team in release builds';
+  $('endpoint').textContent = S.endpoint || 'not configured in this build';
   const st = S.states.crash || {};
   $('fivemPath').textContent = (st.paths && st.paths.appDir) || s.fivemPath || S.fivemDefault;
   $('fivemPath').title = $('fivemPath').textContent;
@@ -270,10 +269,9 @@ $('launchAtStartup').addEventListener('change', () => save({ launchAtStartup: $(
 $('startMinimized').addEventListener('change', () => save({ startMinimized: $('startMinimized').checked }));
 $('notifications').addEventListener('change', () => save({ notifications: $('notifications').checked }));
 $('keepDays').addEventListener('change', () => save({ keepDays: Math.min(365, Math.max(1, Number($('keepDays').value) || 14)) }));
-$('endpoint').addEventListener('change', async () => { await save({ shareEndpoint: $('endpoint').value.trim() }); await boot(false); });
 $('probeBtn').addEventListener('click', async () => {
   $('probeResult').textContent = 'Testing…';
-  const r = await api.invoke('app:probeEndpoint', $('endpoint').value.trim() || undefined);
+  const r = await api.invoke('app:probeEndpoint');
   $('probeResult').textContent = r.ok ? `Reachable (HTTP ${r.status}).` : `Not reachable${r.error ? ': ' + r.error : r.status ? ' (HTTP ' + r.status + ')' : ''}.`;
 });
 $('pickFivemBtn').addEventListener('click', async () => { const p = await api.invoke('app:pickFivemPath'); if (p) { await save({ fivemPath: p }); await boot(false); } });
@@ -288,7 +286,6 @@ function renderAll() { renderHero(); renderTiles(); renderEvents(); renderCaptur
 async function boot(first) {
   const b = await api.invoke('app:boot');
   Object.assign(S, b);
-  S.appConfig.hasBuiltIn = !!b.endpoint && !b.settings.shareEndpoint;
   renderAll();
   if (first) {
     const pending = S.incidents.find((i) => i.share.status === 'pending');

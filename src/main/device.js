@@ -22,8 +22,9 @@ class Device {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       let secret = null;
-      if (raw.secretEnc && safeStorage.isEncryptionAvailable()) secret = safeStorage.decryptString(Buffer.from(raw.secretEnc, 'base64'));
-      else if (raw.secretPlain) secret = raw.secretPlain;
+      const enc = safeStorage.isEncryptionAvailable();
+      if (raw.secretEnc && enc) secret = safeStorage.decryptString(Buffer.from(raw.secretEnc, 'base64'));
+      else if (raw.secretPlain && !enc) secret = raw.secretPlain; // plaintext is only honoured where no keychain exists
       if (raw.deviceId && secret) this.cache = { deviceId: raw.deviceId, secret, endpoint: raw.endpoint, createdAt: raw.createdAt };
     } catch { /* no device yet */ }
     return this.cache;

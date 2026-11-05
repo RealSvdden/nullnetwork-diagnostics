@@ -49,7 +49,7 @@ class Store {
       const v = readJson(c, null);
       if (v) return v;
     }
-    return { serverName: 'THE LAND LA', shareEndpoint: '', discordInvite: '' };
+    return { serverName: 'the Nullnetwork team', shareEndpoint: '', discordInvite: '' };
   }
 
   get effectiveEndpoint() {

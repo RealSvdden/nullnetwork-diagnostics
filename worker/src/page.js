@@ -66,7 +66,7 @@ export async function downloadPage(env) {
   </div>
 
   <h1>When FiveM crashes, send us the dump. Only if you want to.</h1>
-  <p class="lead">A small Windows app that sits in your tray beside FiveM. If the game crashes it saves the crash report on your PC and asks whether to share it with THE LAND LA. Nothing is sent without your yes. The source is public.</p>
+  <p class="lead">A small Windows app that sits in your tray beside FiveM. If the game crashes it saves the crash report on your PC and asks whether to share it with the Nullnetwork team. Nothing is sent without your yes. The source is public.</p>
 
   <div class="cta">
     ${file ? `<a class="btn" href="${file}"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Download for Windows${rel.version ? ` · v${esc(rel.version)}` : ''}</a>` : `<span class="btn ghost">No release published yet</span>`}

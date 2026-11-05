@@ -1,6 +1,6 @@
 # Nullnetwork Diagnostics
 
-A small open-source Windows app that runs in the tray beside FiveM. When the game crashes it saves the crash report on your PC and asks whether to share it with THE LAND LA. Nothing is sent without your yes.
+A small open-source Windows app that runs in the tray beside FiveM. When the game crashes it saves the crash report on your PC and asks whether to share it with the Nullnetwork team. Nothing is sent without your yes.
 
 **Download:** https://diagnostics.nullnetwork.ca · **Releases:** https://github.com/RealSvdden/nullnetwork-diagnostics/releases
 

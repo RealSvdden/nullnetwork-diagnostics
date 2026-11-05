@@ -1,0 +1,47 @@
+name = "nullnetwork-diagnostics"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+account_id = "4673f4a9b1ca1dfa6c3679ca6d840a65"
+
+# diagnostics.nullnetwork.ca -> this worker (download page, update feed, ingest).
+routes = [
+  { pattern = "diagnostics.nullnetwork.ca", custom_domain = true }
+]
+
+# Private bucket. captures/<ref>/<file> (+ meta.json) written here; releases/<file>
+# holds the installer + latest.yml that the app's updater and the download page read.
+[[r2_buckets]]
+binding = "DIAG"
+bucket_name = "nullnetwork-diagnostics"
+
+# Same database as the Nullnetwork admin panel (its migration 0051_diagnostics.sql
+# creates diag_devices / diag_captures / diag_nonces). See docs/SCHEMA.sql for a copy.
+[[d1_databases]]
+binding = "DB"
+database_name = "nullnetwork-admins"
+database_id = "124f551a-f077-4382-8a68-8622f1cace8b"
+
+# Per-colo burst limits (the binding only supports 10 s / 60 s windows). Hourly
+# and daily caps are enforced from D1 in the worker.
+[[unsafe.bindings]]
+name = "RL_REGISTER"
+type = "ratelimit"
+namespace_id = "2001"
+simple = { limit = 3, period = 60 }
+
+[[unsafe.bindings]]
+name = "RL_UPLOAD"
+type = "ratelimit"
+namespace_id = "2002"
+simple = { limit = 4, period = 60 }
+
+[[unsafe.bindings]]
+name = "RL_PUBLIC"
+type = "ratelimit"
+namespace_id = "2003"
+simple = { limit = 60, period = 60 }
+
+# Secrets (wrangler secret put ...):
+#   DEVICE_MASTER_KEY  long random string; device secrets are derived from it. Rotating it
+#                      invalidates every install (they re-register automatically).
+#   IP_SALT            long random string; IPs are stored only as salted hashes.

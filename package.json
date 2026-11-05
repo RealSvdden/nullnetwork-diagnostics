@@ -1,0 +1,71 @@
+{
+  "name": "nullnetwork-diagnostics",
+  "productName": "Nullnetwork Diagnostics",
+  "version": "0.1.0",
+  "description": "Runs beside FiveM, captures crash dumps and other diagnostics, and shares them with THE LAND LA only when you say so.",
+  "main": "src/main/main.js",
+  "author": "THE LAND LA",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/make-icons.js",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "network.nullnetwork.diagnostics",
+    "productName": "Nullnetwork Diagnostics",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "app.config.json",
+        "to": "app.config.json"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "artifactName": "Nullnetwork-Diagnostics-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "differentialPackage": false
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://diagnostics.nullnetwork.ca/v1/update",
+      "channel": "latest"
+    }
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RealSvdden/nullnetwork-diagnostics.git"
+  },
+  "homepage": "https://diagnostics.nullnetwork.ca"
+}

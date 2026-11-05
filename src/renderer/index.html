@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'">
+  <title>Nullnetwork Diagnostics</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="ic-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+      <symbol id="ic-cloud-up" viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.6-7.95A6 6 0 0 1 18 8.5a4.5 4.5 0 0 1-.5 9H7z"/><path d="M12 16v-5 M9.5 13.5 12 11l2.5 2.5"/></symbol>
+      <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="ic-layers" viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/></symbol>
+      <symbol id="ic-share" viewBox="0 0 24 24"><path d="M12 15V4 M8 8l4-4 4 4"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+      <symbol id="ic-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+      <symbol id="ic-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+      <symbol id="ic-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+      <symbol id="ic-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+      <symbol id="ic-x" viewBox="0 0 24 24"><path d="M6 6l12 12 M18 6 6 18"/></symbol>
+      <symbol id="ic-sliders" viewBox="0 0 24 24"><path d="M4 7h10 M18 7h2 M4 17h4 M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-mark" src="../../assets/icon.png" alt="">
+        <div>
+          <div class="brand-name">Nullnetwork</div>
+          <div class="brand-sub">Diagnostics</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item is-active" data-view="overview">
+          <svg viewBox="0 0 24 24"><path d="M3 12l3-3 3 3 2.5-6L15 13l2-3h4"/></svg>
+          Overview
+        </button>
+        <button class="nav-item" data-view="captures">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z M4 7l2-3h12l2 3"/></svg>
+          Captures <span class="nav-badge" id="navBadge" hidden>0</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          Settings
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="foot-card">
+          <span class="dot" id="footDot"></span>
+          <div class="foot-lines"><span class="foot-label">Status</span><span id="footText">Starting</span></div>
+          <span class="foot-version" id="footVersion"></span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"></header>
+      <div class="update-bar" id="updateBar" hidden>
+        <svg class="i"><use href="#ic-cloud-up"/></svg>
+        <div class="update-text"><strong id="updateTitle">Update available</strong><span id="updateSub"></span></div>
+        <div class="update-progress" id="updateProgress" hidden><span id="updateBarFill"></span></div>
+        <div class="update-actions">
+          <button class="btn ghost sm" id="updateLater">Later</button>
+          <button class="btn primary sm" id="updateGo">Update now</button>
+        </div>
+      </div>
+
+      <!-- ============================================================ overview -->
+      <section class="view is-active" data-view="overview">
+        <h1>Overview</h1>
+        <div class="banner banner-warn" id="endpointBanner" hidden>
+          <strong>Sharing isn't set up in this build.</strong> Crash reports are still saved on this PC. Ask the server team for a release build, or set an endpoint under Settings &rsaquo; Advanced.
+        </div>
+
+        <div class="hero card" id="hero">
+          <div class="ring" id="ring">
+            <svg viewBox="0 0 120 120">
+              <circle class="ring-track" cx="60" cy="60" r="52"/>
+              <circle class="ring-arc" cx="60" cy="60" r="52"/>
+              <path class="ring-pulse" d="M28 62h18l8-18 12 36 8-18h18"/>
+            </svg>
+          </div>
+          <div class="hero-text">
+            <div class="eyebrow" id="heroEyebrow">Crash watch</div>
+            <h2 id="heroTitle">Starting up</h2>
+            <p id="heroSub">Checking for FiveM.</p>
+            <div class="hero-meta" id="heroMeta"></div>
+          </div>
+        </div>
+
+        <div class="tiles">
+          <div class="tile"><div class="tile-icon"><svg><use href="#ic-file"/></svg></div><div class="tile-label">Captures</div><div class="tile-value" id="tileCaptures">0</div><div class="tile-sub">saved on this PC</div></div>
+          <div class="tile"><div class="tile-icon"><svg><use href="#ic-cloud-up"/></svg></div><div class="tile-label">Shared</div><div class="tile-value" id="tileShared">0</div><div class="tile-sub">sent to the server</div></div>
+          <div class="tile pink"><div class="tile-icon"><svg><use href="#ic-clock"/></svg></div><div class="tile-label">Waiting for You</div><div class="tile-value accent" id="tilePending">0</div><div class="tile-sub">need a decision</div></div>
+          <div class="tile tile-policy"><div class="tile-icon"><svg><use href="#ic-sliders"/></svg></div><div class="tile-label">Sharing</div><div class="tile-value small" id="tilePolicy">Ask every time</div><button class="link" data-goto="settings">Change</button></div>
+        </div>
+
+        <div id="pendingSection" hidden>
+          <h3 class="section-title">Needs Your Decision</h3>
+          <div id="pendingList" class="stack"></div>
+        </div>
+
+        <h3 class="section-title">Recent Activity</h3>
+        <div class="card list" id="eventList"></div>
+      </section>
+
+      <!-- ============================================================ captures -->
+      <section class="view" data-view="captures">
+        <h1>Captures</h1>
+        <div class="toolbar">
+          <p class="muted">Everything we saved from your crashes. Nothing leaves this PC until you share it.</p>
+          <button class="btn ghost" id="openCapturesBtn"><svg><use href="#ic-folder"/></svg>Open folder</button>
+        </div>
+        <div class="card list" id="captureList"></div>
+      </section>
+
+      <!-- ============================================================ settings -->
+      <section class="view" data-view="settings">
+        <h1>Settings</h1>
+        <div class="settings-grid">
+          <div class="card">
+            <h3>Sharing</h3>
+            <p class="muted">What happens when a crash report is saved.</p>
+            <div class="radio-cards" id="policyCards">
+              <label class="radio-card"><input type="radio" name="policy" value="ask"><span><strong>Ask me every time</strong><small>Show the report and let me decide.</small></span></label>
+              <label class="radio-card"><input type="radio" name="policy" value="always"><span><strong>Always share</strong><small>Send automatically, no questions.</small></span></label>
+              <label class="radio-card"><input type="radio" name="policy" value="never"><span><strong>Never share</strong><small>Keep reports on this PC only.</small></span></label>
+            </div>
+            <div class="field">
+              <label for="playerTag"><svg><use href="#ic-user"/></svg>Your name on the server <span class="muted">(optional)</span></label>
+              <input id="playerTag" type="text" placeholder="In-game name or Discord handle" maxlength="64">
+              <small class="muted">Helps staff match a report to you if they need to follow up.</small>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Startup</h3>
+            <div class="switch-row"><div><strong>Launch with Windows</strong><small>Start watching as soon as you sign in.</small></div><label class="switch"><input type="checkbox" id="launchAtStartup"><span></span></label></div>
+            <div class="switch-row"><div><strong>Start in the tray</strong><small>Don't open this window at launch.</small></div><label class="switch"><input type="checkbox" id="startMinimized"><span></span></label></div>
+            <div class="switch-row"><div><strong>Notifications</strong><small>Tell me when a crash report is saved.</small></div><label class="switch"><input type="checkbox" id="notifications"><span></span></label></div>
+          </div>
+
+          <div class="card">
+            <h3>Storage</h3>
+            <div class="field">
+              <label for="keepDays">Keep handled reports for</label>
+              <div class="inline"><input id="keepDays" type="number" min="1" max="365"> <span class="muted">days</span></div>
+              <small class="muted">Reports you have shared or declined are deleted after this. Reports waiting for a decision are always kept.</small>
+            </div>
+            <div class="kv"><span>Captures on disk</span><strong id="capturesBytes">0 B</strong></div>
+            <div class="kv"><span>Folder</span><code id="capturesDir"></code></div>
+            <button class="btn ghost" id="openCapturesBtn2"><svg><use href="#ic-folder"/></svg>Open captures folder</button>
+          </div>
+
+          <div class="card">
+            <h3>FiveM</h3>
+            <div class="kv"><span>Status</span><strong id="fivemStatus">-</strong></div>
+            <div class="kv"><span>Folder</span><code id="fivemPath"></code></div>
+            <div class="inline">
+              <button class="btn ghost" id="pickFivemBtn">Change folder</button>
+              <button class="btn link" id="resetFivemBtn">Use default</button>
+            </div>
+          </div>
+
+          <div class="card span2">
+            <h3>Advanced</h3>
+            <div class="field">
+              <label for="endpoint">Share endpoint</label>
+              <div class="inline grow"><input id="endpoint" type="url" placeholder="Set by the server team in release builds"><button class="btn ghost" id="probeBtn">Test</button></div>
+              <small class="muted" id="probeResult">Leave empty to use the endpoint built into this release.</small>
+            </div>
+          </div>
+
+          <div class="card span2 about">
+            <h3>About</h3>
+            <p class="muted">Nullnetwork Diagnostics <span id="aboutVersion"></span>. Runs beside FiveM and saves a report when the game crashes. A report contains the crash dump FiveM wrote (a snapshot of the game's memory), the game log, and basic system facts such as your Windows version, CPU and RAM. Nothing is sent anywhere unless you share it, or you turned on "Always share".</p>
+            <div class="kv"><span>Install id</span><code id="deviceId">not registered yet</code></div>
+            <div class="kv"><span>Updates</span><strong id="updateStatus">-</strong></div>
+            <div class="inline"><button class="btn ghost" id="checkUpdateBtn">Check for updates</button><button class="btn ghost" id="discordBtn" hidden>Discord</button><button class="btn link danger" id="resetDeviceBtn">Reset install id</button></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ================================================================ consent dialog -->
+  <div class="overlay" id="consent" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="consentTitle">
+      <div class="dialog-head">
+        <button class="icon-btn" id="consentX" title="Close"><svg><use href="#ic-x"/></svg></button>
+        <div class="pill pink"><svg><use href="#ic-check"/></svg>Crash report saved</div>
+        <div class="dialog-title">
+          <div class="big-icon"><svg><use href="#ic-layers"/></svg></div>
+          <div>
+            <h2 id="consentTitle">FiveM crashed</h2>
+            <p class="muted" id="consentWhen"></p>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-body">
+        <div class="sig"><code id="consentSig"></code><pre id="consentMsg" hidden></pre></div>
+        <div class="two-col">
+          <div>
+            <h4><svg><use href="#ic-file"/></svg>What we saved</h4>
+            <ul class="files" id="consentFiles"></ul>
+          </div>
+          <div>
+            <h4><svg><use href="#ic-share"/></svg>What sharing sends</h4>
+            <ul class="bullets">
+              <li>The crash dump and game log above</li>
+              <li>Windows version, CPU, RAM, FiveM build</li>
+              <li>Your note and name below, if you add them</li>
+            </ul>
+          </div>
+        </div>
+        <div class="field">
+          <label for="consentNote"><svg><use href="#ic-chat"/></svg>What were you doing? <span class="muted">(optional)</span></label>
+          <textarea id="consentNote" rows="1" maxlength="600" placeholder="e.g. driving into the casino, screen froze, then crashed"></textarea>
+        </div>
+        <div class="field">
+          <label for="consentTag"><svg><use href="#ic-user"/></svg>Your name on the server <span class="muted">(optional)</span></label>
+          <input id="consentTag" type="text" maxlength="64" placeholder="In-game name or Discord handle">
+        </div>
+        <label class="check"><input type="checkbox" id="consentAlways"><span>Always share automatically from now on</span></label>
+        <div class="progress" id="consentProgress" hidden><div class="bar"><span id="consentBar"></span></div><div class="muted" id="consentPct">Uploading 0%</div></div>
+        <div class="result ok" id="consentDone" hidden><strong>Shared. Thank you.</strong><span id="consentRef"></span></div>
+        <div class="result bad" id="consentFail" hidden><strong>Couldn't share.</strong><span id="consentErr"></span></div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn link" id="consentFolder"><svg><use href="#ic-folder"/></svg>Open folder</button>
+        <div class="grow"></div>
+        <button class="btn ghost" id="consentLater">Not this time</button>
+        <button class="btn primary" id="consentShare"><svg><use href="#ic-share"/></svg><span id="consentShareLabel">Share with the server</span></button>
+        <button class="btn primary" id="consentClose" hidden>Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

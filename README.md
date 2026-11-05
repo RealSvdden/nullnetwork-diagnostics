@@ -81,6 +81,8 @@ cd worker && npm install && npx wrangler login && cd ..
 powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -InitSecrets   # first time
 ```
 
+Only the Cloudflare account that owns the `nullnetwork-diagnostics` worker and bucket can run these: `wrangler deploy` and the `releases/` upload fail for any other login, and installed apps are pinned to `diagnostics.nullnetwork.ca`, which only that account can serve. Anyone can fork and deploy their own copy under their own account, but no existing install will ever contact it. The GitHub release step needs push access to this repository.
+
 Then for each release: bump `version` in `package.json`, commit, and run the script without `-InitSecrets`. It deploys the worker, builds the installer, uploads it with `latest.yml` to the bucket's `releases/` prefix, creates the GitHub release when `gh` is logged in, and verifies the live endpoints. The D1 tables come from the admin panel's migrations (`docs/SCHEMA.sql` is a copy).
 
 ## Adding a module

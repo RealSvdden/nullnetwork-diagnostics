@@ -24,7 +24,7 @@ export async function downloadPage(env) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nullnetwork Diagnostics</title>
-<meta name="description" content="A small open-source app that runs beside FiveM, saves the crash dump when the game crashes, and only shares it with THE LAND LA if you say yes.">
+<meta name="description" content="A small open-source app that runs beside FiveM, saves the crash dump when the game crashes, and only shares it with the Nullnetwork team if you say yes.">
 <style>
   :root { --bg:#070b14; --text:#eef1f7; --muted:#98a2b6; --faint:#5f6981; --line:rgba(255,255,255,.08); --blue:#4f8cff; --pink:#ff5fa2; --green:#45d483; }
   * { box-sizing: border-box; }

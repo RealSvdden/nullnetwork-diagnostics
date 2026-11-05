@@ -1,7 +1,7 @@
 {
   "name": "nullnetwork-diagnostics",
   "productName": "Nullnetwork Diagnostics",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Runs beside FiveM, captures crash dumps and other diagnostics, and shares them with THE LAND LA only when you say so.",
   "main": "src/main/main.js",
   "author": "THE LAND LA",

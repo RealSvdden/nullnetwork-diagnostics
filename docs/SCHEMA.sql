@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS diag_devices (
   day_uploads  INTEGER NOT NULL DEFAULT 0,
   day_bytes    INTEGER NOT NULL DEFAULT 0,
   revoked      INTEGER NOT NULL DEFAULT 0,
+  revoked_at   INTEGER,                 -- set by the trigger below when revoked flips to 1
   note         TEXT
 ) WITHOUT ROWID;
 
@@ -59,3 +60,32 @@ CREATE TABLE IF NOT EXISTS diag_nonces (
   ts        INTEGER NOT NULL,
   PRIMARY KEY (device_id, nonce)
 ) WITHOUT ROWID;
+
+-- IP buckets (see ipBucket() in the worker: IPv4 /32, IPv6 /64) that a revoked install
+-- registered or uploaded from. POST /v1/register refuses a bucket whose revoked_at is
+-- within the last 30 days with the same 403 a revoked device gets, so "reset install id"
+-- cannot undo a staff revoke. Rows are written by the trigger below (admin panel revoke)
+-- and by the worker when a revoked install contacts it from a new bucket.
+CREATE TABLE IF NOT EXISTS diag_revoked_ips (
+  ip_hash    TEXT    PRIMARY KEY,
+  device_id  TEXT    NOT NULL,
+  revoked_at INTEGER NOT NULL
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_diag_revoked_ips_time ON diag_revoked_ips (revoked_at);
+
+-- The admin panel revokes with UPDATE diag_devices SET revoked = 1 ...; this stamps the
+-- time and records every bucket the device was seen from.
+CREATE TRIGGER IF NOT EXISTS trg_diag_devices_revoked
+AFTER UPDATE OF revoked ON diag_devices
+WHEN NEW.revoked = 1 AND (OLD.revoked IS NULL OR OLD.revoked = 0)
+BEGIN
+  UPDATE diag_devices SET revoked_at = CAST(strftime('%s', 'now') AS INTEGER) WHERE device_id = NEW.device_id;
+  INSERT INTO diag_revoked_ips (ip_hash, device_id, revoked_at)
+    SELECT ip_hash, NEW.device_id, CAST(strftime('%s', 'now') AS INTEGER) FROM (
+      SELECT NEW.ip_hash AS ip_hash
+      UNION
+      SELECT ip_hash FROM diag_captures WHERE device_id = NEW.device_id
+    ) WHERE ip_hash IS NOT NULL
+    ON CONFLICT (ip_hash) DO UPDATE SET revoked_at = excluded.revoked_at, device_id = excluded.device_id;
+END;

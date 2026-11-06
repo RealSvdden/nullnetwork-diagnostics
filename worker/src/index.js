@@ -28,7 +28,9 @@ const MAX_JSON_BODY = 64 * 1024;
 const DAILY_UPLOADS = 12;
 const DAILY_BYTES = 512 * 1024 * 1024;
 const HOURLY_UPLOADS = 6;              // per device, counted from D1
-const HOURLY_REGISTRATIONS = 5;        // per IP hash, counted from D1
+const HOURLY_REGISTRATIONS = 5;        // per IP bucket, counted from D1
+const REVOKE_BLOCK_SEC = 30 * 86400;   // a revoked install blocks its IP bucket from registering again for this long
+const BLOCKED_MSG = 'this install has been blocked from sharing';
 
 // name pattern -> { max bytes, magic check }
 const FILE_RULES = [
@@ -58,7 +60,36 @@ const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
 const int = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.round(Number(v)))) : null);
 
 async function deviceSecret(env, deviceId) { return b64url(await hmac(env.DEVICE_MASTER_KEY, `device:${deviceId}`)); }
-async function ipHash(env, ip) { return (await sha256(`${env.IP_SALT}|${ip || ''}`)).slice(0, 32); }
+
+// Every per-IP limit and every stored IP hash keys on a bucket, not the exact address:
+// IPv4 is the address itself (/32), IPv6 is its /64 prefix (the usual allocation to
+// one subscriber), so an IPv6 host cannot mint fresh identities by rotating the low bits.
+// IPv4-mapped IPv6 (::ffff:a.b.c.d) counts as the IPv4 address.
+function ipBucket(ip) {
+  let raw = String(ip || '').trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
+  if (!raw) return '';
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(raw)) return raw;
+  const mapped = /^(?:0*:)*:ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(raw);
+  if (mapped) return mapped[1];
+  if (!raw.includes(':')) return raw;
+  // Expand :: so the first four hextets are known, then normalise each one.
+  const halves = raw.split('::');
+  if (halves.length > 2) return raw;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? Math.max(0, 8 - left.length - right.length) : 0;
+  const parts = [...left, ...Array(fill).fill('0'), ...right];
+  if (parts.length !== 8 || parts.some((h) => !/^[0-9a-f]{1,4}$/.test(h))) return raw;
+  return `${parts.slice(0, 4).map((h) => parseInt(h, 16).toString(16)).join(':')}::/64`;
+}
+const clientBucket = (req) => ipBucket(req.headers.get('CF-Connecting-IP'));
+
+// Salted hash of the bucket. IP_SALT is a dedicated secret; the master key is never
+// used for this, so a leaked hash table cannot be joined to device secrets.
+async function ipHash(env, bucket) {
+  if (!env.IP_SALT) throw new Error('IP_SALT is not configured');
+  return (await sha256(`${env.IP_SALT}|${bucket || ''}`)).slice(0, 32);
+}
 
 async function rateLimit(binding, key) {
   if (!binding) return true; // local dev without the binding
@@ -77,9 +108,19 @@ async function authenticate(req, env, url, bodyHash) {
   const expected = b64url(await hmac(await deviceSecret(env, deviceId), `${req.method}\n${url.pathname}\n${ts}\n${nonce}\n${bodyHash}`));
   if (!timingSafeEqual(expected, sig)) return deny(401, 'bad signature');
 
-  const device = await env.DB.prepare('SELECT device_id, revoked, day, day_uploads, day_bytes FROM diag_devices WHERE device_id = ?1').bind(deviceId).first();
+  const device = await env.DB.prepare('SELECT device_id, revoked, revoked_at, day, day_uploads, day_bytes FROM diag_devices WHERE device_id = ?1').bind(deviceId).first();
   if (!device) return deny(401, 'unknown device');
-  if (device.revoked) return deny(403, 'this install has been blocked from sharing');
+  if (device.revoked) {
+    // The signature proved this is the revoked install, so remember the bucket it is
+    // talking from: "reset install id" from the same network cannot register again
+    // (see register). The window is anchored at the revoke time, not at this contact.
+    const at = device.revoked_at || now();
+    await env.DB.batch([
+      env.DB.prepare('UPDATE diag_devices SET revoked_at = ?2 WHERE device_id = ?1 AND revoked_at IS NULL').bind(deviceId, at),
+      env.DB.prepare('INSERT OR IGNORE INTO diag_revoked_ips (ip_hash, device_id, revoked_at) VALUES (?1, ?2, ?3)').bind(await ipHash(env, clientBucket(req)), deviceId, at),
+    ]).catch((err) => console.error('revoked bucket record failed', String(err)));
+    return deny(403, BLOCKED_MSG);
+  }
 
   // Single-use nonce (10 minute memory; the skew window is 5).
   try {
@@ -166,15 +207,19 @@ async function pruneOpen(env) {
 
 // -------------------------------------------------------------- routes ---
 async function register(req, env) {
-  const ip = req.headers.get('CF-Connecting-IP') || '';
-  if (!(await rateLimit(env.RL_REGISTER, `reg:${ip}`))) return deny(429, 'too many registrations');
+  const bucket = clientBucket(req);
+  if (!(await rateLimit(env.RL_REGISTER, `reg:${bucket}`))) return deny(429, 'too many registrations');
   const body = await readJson(req, 4096);
   if (!body) return deny(400, 'bad body');
   const appVersion = str(body.value.app && body.value.app.version, 32);
   const fingerprint = str(body.value.fingerprint, 64);
   if (fingerprint && !/^[0-9a-f]{16,64}$/.test(fingerprint)) return deny(400, 'bad fingerprint');
 
-  const ipH = await ipHash(env, ip);
+  const ipH = await ipHash(env, bucket);
+  // A bucket that a staff revoke touched in the last 30 days gets the same answer a
+  // revoked install gets, so resetting the install id does not undo the revoke.
+  const blocked = await env.DB.prepare('SELECT 1 AS hit FROM diag_revoked_ips WHERE ip_hash = ?1 AND revoked_at > ?2 LIMIT 1').bind(ipH, now() - REVOKE_BLOCK_SEC).first();
+  if (blocked) return deny(403, BLOCKED_MSG);
   const recent = await env.DB.prepare('SELECT COUNT(*) AS n FROM diag_devices WHERE ip_hash = ?1 AND created_at > ?2').bind(ipH, now() - 3600).first();
   if (recent && recent.n >= HOURLY_REGISTRATIONS) return deny(429, 'too many registrations');
 
@@ -191,8 +236,8 @@ async function declare(req, env, url) {
   const auth = await authenticate(req, env, url, await sha256(body.raw));
   if (auth instanceof Response) return auth;
   const { device } = auth;
-  const ip = req.headers.get('CF-Connecting-IP') || '';
-  if (!(await rateLimit(env.RL_UPLOAD, `up:${device.device_id}`)) || !(await rateLimit(env.RL_UPLOAD, `upip:${ip}`))) return deny(429, 'too many uploads; try again later');
+  const bucket = clientBucket(req);
+  if (!(await rateLimit(env.RL_UPLOAD, `up:${device.device_id}`)) || !(await rateLimit(env.RL_UPLOAD, `upip:${bucket}`))) return deny(429, 'too many uploads; try again later');
 
   const meta = sanitizeMeta(body.value.meta);
   if (!meta) return deny(400, 'bad meta');
@@ -223,7 +268,7 @@ async function declare(req, env, url) {
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9, ?10, ?11, '[]', ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)`)
     .bind(ref, device.device_id, meta.module, classify(meta.crash.signature, meta.crash.message), meta.crash.signature, meta.crash.message, meta.crash.reportId,
       t, Number.isFinite(capturedAt) ? Math.floor(capturedAt) : null, total, JSON.stringify(files), meta.playerTag, meta.note, meta.game.gameVersion,
-      meta.app.version, meta.machine.os, meta.machine.cpu, meta.machine.ramGb, req.cf && req.cf.country || null, await ipHash(env, ip),
+      meta.app.version, meta.machine.os, meta.machine.cpu, meta.machine.ramGb, req.cf && req.cf.country || null, await ipHash(env, bucket),
       meta.session.seconds, JSON.stringify(meta)).run();
   await env.DB.prepare('UPDATE diag_devices SET last_seen_at = ?2, player_tag = COALESCE(?3, player_tag), app_version = COALESCE(?4, app_version) WHERE device_id = ?1')
     .bind(device.device_id, t, meta.playerTag, meta.app.version).run();
@@ -310,8 +355,7 @@ async function complete(req, env, url, ref) {
 
 async function serveUpdate(req, env, file) {
   if (!UPDATE_FILE.test(file)) return new Response('not found', { status: 404 });
-  const ip = req.headers.get('CF-Connecting-IP') || '';
-  if (!(await rateLimit(env.RL_PUBLIC, `upd:${ip}`))) return new Response('slow down', { status: 429 });
+  if (!(await rateLimit(env.RL_PUBLIC, `upd:${clientBucket(req)}`))) return new Response('slow down', { status: 429 });
   const ranged = req.headers.has('Range');
   const obj = await env.DIAG.get(`releases/${file}`, ranged ? { range: req.headers, onlyIf: req.headers } : { onlyIf: req.headers });
   if (!obj) return new Response('not found', { status: 404 });

@@ -98,6 +98,19 @@ class Store {
     return inc;
   }
   getIncident(id) { return this.history.incidents.find((i) => i.id === id) || null; }
+  // The folder an incident's files live in, or null unless it is a real directory that is
+  // a direct child of the captures folder. history.json is plain JSON on disk, so
+  // nothing it says may point a delete (or a read) anywhere else; symlinks and
+  // junctions are refused as well.
+  captureDir(inc) {
+    if (!inc || typeof inc.dir !== 'string' || !inc.dir) return null;
+    const root = path.resolve(this.capturesDir);
+    const dir = path.resolve(root, inc.dir);
+    const rel = path.relative(root, dir);
+    if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel) || /[\\/]/.test(rel)) return null;
+    try { const st = fs.lstatSync(dir); if (!st.isDirectory() || st.isSymbolicLink()) return null; } catch { return null; }
+    return dir;
+  }
   removeIncident(id) {
     this.history.incidents = this.history.incidents.filter((i) => i.id !== id);
     this.saveHistory();

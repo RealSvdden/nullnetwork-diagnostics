@@ -17,6 +17,14 @@ const EXIT_GRACE_MS = 25000;    // after the game vanishes, how long we wait for
 const SETTLE_MS = 1500;         // dump size must be stable this long before we touch it
 const GAMELOG_WAIT_MS = 6000;   // give FiveM a moment to write the .gamelog beside the dump
 
+// Size caps on what a capture copies into the captures folder. A runaway dump or log
+// is skipped (the incident says so) rather than filling the player's disk.
+const MAX_FILE_BYTES = 1024 ** 3;              // any single source file (the dump in practice)
+const MAX_LOG_BYTES = 256 * 1024 * 1024;       // CitizenFX log read for gzip
+const MAX_CAPTURE_BYTES = 1.25 * 1024 ** 3;    // everything in one capture folder
+
+const fmtBytes = (n) => { const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return `${i ? n.toFixed(1) : Math.round(n)} ${u[i]}`; };
+
 function ts() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -156,14 +164,26 @@ class CrashModule extends EventEmitter {
     fs.mkdirSync(dir, { recursive: true });
 
     const files = [];
-    const add = (name, abs) => { files.push({ name, size: fs.statSync(abs).size }); };
+    const skipped = [];
+    let budget = MAX_CAPTURE_BYTES;
+    const add = (name, abs) => { const size = fs.statSync(abs).size; files.push({ name, size }); budget -= size; };
+    // Source size against the per-file cap and what is left of the capture budget.
+    const fits = (name, src, limit) => {
+      let size; try { size = fs.statSync(src).size; } catch { skipped.push(`${name} could not be read`); return false; }
+      if (size > limit) { skipped.push(`${name} (${fmtBytes(size)}) is over the ${fmtBytes(limit)} limit`); return false; }
+      if (size > budget) { skipped.push(`${name} (${fmtBytes(size)}) does not fit in the ${fmtBytes(MAX_CAPTURE_BYTES)} capture limit`); return false; }
+      return true;
+    };
 
-    const dmpOut = path.join(dir, path.basename(dmp));
-    await fs.promises.copyFile(dmp, dmpOut); add(path.basename(dmp), dmpOut);
+    const dmpName = path.basename(dmp);
+    if (fits(dmpName, dmp, MAX_FILE_BYTES)) {
+      const dmpOut = path.join(dir, dmpName);
+      await fs.promises.copyFile(dmp, dmpOut); add(dmpName, dmpOut);
+    }
 
     let game = {};
-    if (fs.existsSync(dmp + '.gamelog')) {
-      const out = path.join(dir, path.basename(dmp) + '.gamelog');
+    if (fs.existsSync(dmp + '.gamelog') && fits(dmpName + '.gamelog', dmp + '.gamelog', MAX_FILE_BYTES)) {
+      const out = path.join(dir, dmpName + '.gamelog');
       await fs.promises.copyFile(dmp + '.gamelog', out); add(path.basename(out), out);
       game = parseGamelog(out);
     }
@@ -172,11 +192,21 @@ class CrashModule extends EventEmitter {
     const log = fivem.latestLog(this.paths.logsDir);
     if (log) {
       crash = parseCrashBlock(log);
-      const out = path.join(dir, 'CitizenFX.log.gz');
-      try {
-        await pipeline(fs.createReadStream(log), zlib.createGzip({ level: 6 }), fs.createWriteStream(out));
-        add('CitizenFX.log.gz', out);
-      } catch { /* log may be locked; dump alone still helps */ }
+      // The uncompressed size bounds the gzip output, so it is what gets checked.
+      if (fits('CitizenFX.log', log, MAX_LOG_BYTES)) {
+        const out = path.join(dir, 'CitizenFX.log.gz');
+        try {
+          await pipeline(fs.createReadStream(log), zlib.createGzip({ level: 6 }), fs.createWriteStream(out));
+          add('CitizenFX.log.gz', out);
+        } catch { /* log may be locked; dump alone still helps */ }
+      }
+    }
+    if (skipped.length) {
+      // Visible in the consent dialog and Captures, and goes up as part of the crash
+      // message so staff see why a file is missing.
+      const note = `Not saved: ${skipped.join('; ')}.`;
+      crash = crash || { signature: 'Unknown crash', message: '', stack: [], reportId: null };
+      crash.message = [crash.message, note].filter(Boolean).join('\n\n');
     }
 
     const sessionSeconds = this.state.since ? Math.round((Date.now() - this.state.since) / 1000) : null;
@@ -197,6 +227,7 @@ class CrashModule extends EventEmitter {
       crash: crash || { signature: 'Unknown crash', message: '', stack: [], reportId: null },
       game,
       files,
+      skipped,
       source: { dump: dmp, log },
     };
     fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 2));

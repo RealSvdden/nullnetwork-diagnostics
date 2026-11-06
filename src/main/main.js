@@ -169,10 +169,16 @@ async function shareIncident(id, { note = '', playerTag, auto = false } = {}) {
   store.updateIncident(id, { note, share: { status: 'uploading', pct: 0 } });
   broadcast('incident:update', store.getIncident(id));
 
+  const dir = store.captureDir(inc);
+  if (!dir) {
+    store.updateIncident(id, { share: { status: 'failed', error: 'The capture folder is missing.' } });
+    broadcast('incident:update', store.getIncident(id));
+    throw new Error('capture folder missing');
+  }
   let report = {};
-  try { report = JSON.parse(fs.readFileSync(path.join(inc.dir, 'report.json'), 'utf8')); } catch { /* fine */ }
+  try { report = JSON.parse(fs.readFileSync(path.join(dir, 'report.json'), 'utf8')); } catch { /* fine */ }
   const meta = { ...report, note, playerTag: store.settings.playerTag || null, sharedAt: new Date().toISOString(), auto };
-  const files = fs.readdirSync(inc.dir).filter((f) => f !== 'report.json').map((f) => ({ path: path.join(inc.dir, f) }));
+  const files = fs.readdirSync(dir).filter((f) => f !== 'report.json').map((f) => ({ path: path.join(dir, f) }));
 
   try {
     let res;
@@ -208,10 +214,17 @@ function purgeOld() {
   for (const inc of store.history.incidents) {
     if (inc.purged || inc.share.status === 'pending' || inc.share.status === 'uploading') continue;
     if (now - Date.parse(inc.at) < keepMs) continue;
-    try { fs.rmSync(inc.dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    removeCaptureDir(inc);
     inc.purged = true; inc.files = []; inc.totalBytes = 0;
   }
   store.saveHistory();
+}
+
+// Deletes only when the folder resolves to a direct child of the captures folder.
+function removeCaptureDir(inc) {
+  const dir = store.captureDir(inc);
+  if (!dir) return;
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 function capturesSize() {
@@ -272,10 +285,10 @@ ipcMain.handle('incident:decline', (_e, { id }) => {
   broadcast('incident:update', inc); broadcast('events', store.history.events); refreshTray();
   return inc;
 });
-ipcMain.handle('incident:openFolder', (_e, { id }) => { const inc = store.getIncident(id); if (inc && fs.existsSync(inc.dir)) shell.openPath(inc.dir); });
+ipcMain.handle('incident:openFolder', (_e, { id }) => { const dir = store.captureDir(store.getIncident(id)); if (dir) shell.openPath(dir); });
 ipcMain.handle('incident:delete', (_e, { id }) => {
   const inc = store.getIncident(id);
-  if (inc) { try { fs.rmSync(inc.dir, { recursive: true, force: true }); } catch { /* ignore */ } store.removeIncident(id); }
+  if (inc) { removeCaptureDir(inc); store.removeIncident(id); }
   refreshTray();
   return store.history.incidents;
 });

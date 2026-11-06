@@ -9,7 +9,7 @@ Crash capture is the first module. The main process is a module host, so later c
 ## What it does
 
 1. Polls for the FiveM game process every 2 seconds and watches `%LOCALAPPDATA%\FiveM\FiveM.app\crashes` for new `.dmp` files.
-2. When a dump appears it waits for FiveM to finish writing it (and the `.dmp.gamelog` beside it), then copies both into a capture folder, gzips the current `CitizenFX_log_*.log` next to them, and writes `report.json`: the crash signature, message and stack parsed from the log's `Process crash captured` block, the FiveM `si-...` report id, a few vitals from the gamelog, and OS / CPU / RAM.
+2. When a dump appears it waits for FiveM to finish writing it (and the `.dmp.gamelog` beside it), then copies both into a capture folder, gzips the current `CitizenFX_log_*.log` next to them, and writes `report.json`: the crash signature, message and stack parsed from the log's `Process crash captured` block, the FiveM `si-...` report id, a few vitals from the gamelog, and OS / CPU / RAM. A source file over 1 GiB (or a CitizenFX log over 256 MiB) is skipped and named in the report, and one capture never copies more than 1.25 GiB.
 3. Shows a notification and a consent dialog listing exactly what was saved and what sharing sends, with an optional note ("what were you doing?") and name.
 4. On yes, uploads through the signed protocol below with a progress bar. Failures stay retryable from the Captures view. "Always share" and "Never share" are settings.
 
@@ -19,7 +19,7 @@ Captures live in `%APPDATA%\Nullnetwork Diagnostics\captures\<timestamp>_<dumpid
 
 - **Reads:** the FiveM `crashes\` and `logs\` folders, the process list (to see whether FiveM is running), and basic machine facts from the OS (`os.type()`, CPU model, total RAM). Nothing else on disk.
 - **Sends, only when you share:** the minidump FiveM wrote (a snapshot of the game process memory, which can include your Windows username in paths), the gamelog, the CitizenFX log, the machine facts above, the FiveM build, and your note and name if you typed them.
-- **Never:** no uploads without a click (unless you turn on "Always share"), no telemetry, no accounts, no reading outside those folders. The server stores your IP only as a salted hash.
+- **Never:** no uploads without a click (unless you turn on "Always share"), no telemetry, no accounts, no reading outside those folders. The server stores your IP only as a salted hash of the address (IPv4) or of its /64 prefix (IPv6).
 
 You can open the capture folder from the app at any time and delete anything in it.
 
@@ -55,7 +55,7 @@ src/main/modules/crash/     the crash module (watcher + capture + log parsing)
 src/preload.js              contextBridge: window.nn.invoke / window.nn.on
 src/renderer/               vanilla HTML/CSS/JS, three views + consent dialog
 worker/                     Cloudflare Worker: download page, update feed, ingest
-docs/SCHEMA.sql             the D1 tables the worker writes
+docs/SCHEMA.sql             the D1 tables the worker writes (docs/00xx_*.sql: migrations for the admin panel)
 scripts/release.ps1         maintainers: deploy, build, publish
 app.config.json             baked into the build: serverName, shareEndpoint, discordInvite
 ```
@@ -64,12 +64,12 @@ app.config.json             baked into the build: serverName, shareEndpoint, dis
 
 The worker in `worker/` is everything the app talks to. It is designed so that nothing in this public repo or in the installer is a secret, and so that the endpoint cannot be used to read reports or to spam them.
 
-- **Per-install identity.** On first share the app calls `POST /v1/register` and gets a device id + secret. The secret is derived server-side from a master key and never stored; the app keeps it encrypted with the Windows user keychain (`safeStorage`). Staff can block an install from sharing again.
+- **Per-install identity.** On first share the app calls `POST /v1/register` and gets a device id + secret. The secret is derived server-side from a master key and never stored; the app keeps it encrypted with the Windows user keychain (`safeStorage`); a plaintext copy is only ever written, or read, on a host where `safeStorage` reports encryption unavailable. Staff can block an install from sharing again. Resetting the install id does not undo that: the IP bucket (IPv4 address, IPv6 /64) a blocked install registered and uploaded from is refused new registrations for 30 days, with the same answer the blocked install gets.
 - **Every write is signed.** `X-NN-Sig = HMAC-SHA256(secret, method \n path \n ts \n nonce \n bodySha256)`. Timestamps expire after 5 minutes and nonces are single use, so a captured request cannot be replayed or altered.
-- **Declared uploads.** `POST /v1/capture` declares the meta and a manifest (name, size, sha256 per file). Each file then goes up with `PUT /v1/capture/:ref/file/:name`, streamed straight into R2, which verifies the sha256; `POST /v1/capture/:ref/complete` closes it. File names, sizes, count, content magic (`MDMP`, gzip, text) and every meta field are allow-listed and length-capped.
-- **Limits.** Burst limits per IP and per device at the edge; 5 registrations per IP per hour, 6 uploads per device per hour, 12 per day, 512 MiB per day from the database.
+- **Declared uploads.** `POST /v1/capture` declares the meta and a manifest (name, size, sha256 per file). Each file then goes up with `PUT /v1/capture/:ref/file/:name`, streamed straight into R2, which verifies the sha256; `POST /v1/capture/:ref/complete` closes it. File names, sizes (minimum and maximum), count, content (a full `MDMP` header with at least one stream, a gzip header with deflate, text with no NUL byte in the first 64 KiB) and every meta field are allow-listed and length-capped.
+- **Limits.** Burst limits per IP bucket and per device at the edge; 5 registrations per bucket per hour, 6 uploads per device per hour, 12 per day, 512 MiB per day from the database. An IP bucket is the IPv4 address or the IPv6 /64, so an IPv6 host cannot escape a limit by changing the low bits of its address.
 - **No read path.** There is no endpoint that returns a capture. The bucket is private; staff read reports through the admin panel behind its own permissions.
-- **Public surface.** `GET /` (this download page), `GET /health`, and `GET /v1/update/<file>` (the update feed), all read-only and rate limited.
+- **Public surface.** `GET /` (this download page), `GET /health`, and `GET /v1/update/<file>` (the update feed), all read-only and rate limited. The feed serves `latest.yml` as `text/yaml` and installers as `application/octet-stream` attachments, with `nosniff`; byte ranges are checked against the file size (416 when unsatisfiable).
 - **Pinned endpoint.** The endpoint is compiled into the installer and cannot be changed from the app, so neither uploads nor updates can be redirected by editing a setting.
 
 ## Updates

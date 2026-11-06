@@ -167,9 +167,13 @@ class CrashModule extends EventEmitter {
     const skipped = [];
     let budget = MAX_CAPTURE_BYTES;
     const add = (name, abs) => { const size = fs.statSync(abs).size; files.push({ name, size }); budget -= size; };
-    // Source size against the per-file cap and what is left of the capture budget.
+    // Source must be a regular file (lstat: a symlink or junction dropped into the FiveM
+    // crashes folder is refused, never followed), within the per-file cap and what is
+    // left of the capture budget.
     const fits = (name, src, limit) => {
-      let size; try { size = fs.statSync(src).size; } catch { skipped.push(`${name} could not be read`); return false; }
+      let st; try { st = fs.lstatSync(src); } catch { skipped.push(`${name} could not be read`); return false; }
+      if (!st.isFile()) { skipped.push(`${name} is not a regular file`); return false; }
+      const size = st.size;
       if (size > limit) { skipped.push(`${name} (${fmtBytes(size)}) is over the ${fmtBytes(limit)} limit`); return false; }
       if (size > budget) { skipped.push(`${name} (${fmtBytes(size)}) does not fit in the ${fmtBytes(MAX_CAPTURE_BYTES)} capture limit`); return false; }
       return true;

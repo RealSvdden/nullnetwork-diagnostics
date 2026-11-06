@@ -278,7 +278,16 @@ ipcMain.handle('settings:set', (_e, patch) => {
   refreshTray();
   return after;
 });
-ipcMain.handle('incident:share', (_e, { id, note, playerTag }) => shareIncident(id, { note, playerTag }).catch((err) => ({ error: String(err.message || err) })));
+// Renderer-supplied text: typed, control-stripped (C0/C1, DEL, bidi overrides and
+// isolates, so no newlines either) and capped to what the worker accepts.
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+const cleanText = (v, max) => (typeof v === 'string' ? v.replace(CONTROL_RE, '').slice(0, max) : '');
+ipcMain.handle('incident:share', (_e, arg) => {
+  const a = arg && typeof arg === 'object' ? arg : {};
+  const opts = { note: cleanText(a.note, 600) };
+  if (a.playerTag !== undefined) opts.playerTag = cleanText(a.playerTag, 64);
+  return shareIncident(typeof a.id === 'string' ? a.id : '', opts).catch((err) => ({ error: String(err.message || err) }));
+});
 ipcMain.handle('incident:decline', (_e, { id }) => {
   const inc = store.updateIncident(id, { share: { status: 'declined', at: new Date().toISOString() } });
   store.addEvent('declined', { id });

@@ -73,7 +73,7 @@ class Store {
       const v = p[k];
       switch (k) {
         case 'sharePolicy': if (['ask', 'always', 'never'].includes(v)) this.settings[k] = v; break;
-        case 'playerTag': if (typeof v === 'string') this.settings[k] = v.slice(0, 64); break;
+        case 'playerTag': if (typeof v === 'string') this.settings[k] = v.replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, '').slice(0, 64); break;
         case 'fivemPath': if (typeof v === 'string' && v.length < 1024 && !v.includes('\0')) this.settings[k] = v; break;
         case 'keepDays': if (Number.isFinite(Number(v))) this.settings[k] = Math.min(365, Math.max(1, Math.round(Number(v)))); break;
         default: if (typeof v === 'boolean') this.settings[k] = v;

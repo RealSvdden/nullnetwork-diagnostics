@@ -9,13 +9,18 @@ const S = {
   view: 'overview', consentId: null, consentBusy: false,
 };
 
-const fmtBytes = (n) => { if (!n) return '0 B'; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${u[i]}`; };
+const fmtBytes = (n) => { n = Number(n) || 0; if (!n) return '0 B'; const u = ['B', 'KB', 'MB', 'GB']; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${u[i]}`; };
 const fmtTime = (iso) => { const d = new Date(iso); const today = new Date().toDateString() === d.toDateString(); return (today ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ') + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); };
-const fmtDuration = (ms) => { const m = Math.floor(ms / 60000); if (m < 1) return 'just started'; if (m < 60) return `${m} min`; return `${Math.floor(m / 60)} h ${m % 60} min`; };
+const fmtDuration = (ms) => { const m = Math.floor((Number(ms) || 0) / 60000); if (m < 1) return 'just started'; if (m < 60) return `${m} min`; return `${Math.floor(m / 60)} h ${m % 60} min`; };
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const serverName = () => S.appConfig.serverName || 'the server';
 const policyLabel = { ask: 'Ask every time', always: 'Always share', never: 'Never share' };
 const statusLabel = { pending: 'Waiting for you', uploading: 'Sharing', shared: 'Shared', declined: 'Not shared', local: 'Kept locally', failed: 'Share failed', purged: 'Files removed' };
+const files = (i) => (Array.isArray(i && i.files) ? i.files : []);
+// Own-key lookup with a fallback: labels come from state on disk, never from the prototype.
+const label = (map, key, fallback) => (typeof key === 'string' && Object.hasOwn(map, key) ? map[key] : fallback);
+// Every dynamic value that lands in an HTML template goes through esc(), including the
+// output of the formatters above; only fixed markup (ICONS, class names from fixed maps) is raw.
 
 const ICONS = {
   crash: '<svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z M12 10v4 M12 17.5v.5"/></svg>',
@@ -53,9 +58,9 @@ function renderHero() {
   $('heroSub').textContent = sub;
   $('footText').textContent = title;
   const meta = [];
-  if (st.phase === 'running' && st.since) meta.push(`<span class="chip">Session <code>${fmtDuration(Date.now() - st.since)}</code></span>`);
+  if (st.phase === 'running' && st.since) meta.push(`<span class="chip">Session <code>${esc(fmtDuration(Date.now() - st.since))}</code></span>`);
   if (st.process) meta.push(`<span class="chip"><code>${esc(st.process)}</code></span>`);
-  meta.push(`<span class="chip">Sharing <code>${policyLabel[S.settings.sharePolicy] || 'Ask every time'}</code></span>`);
+  meta.push(`<span class="chip">Sharing <code>${esc(label(policyLabel, S.settings.sharePolicy, 'Ask every time'))}</code></span>`);
   $('heroMeta').innerHTML = meta.join('');
 }
 
@@ -65,7 +70,7 @@ function renderTiles() {
   $('tileCaptures').textContent = inc.length;
   $('tileShared').textContent = inc.filter((i) => i.share.status === 'shared').length;
   $('tilePending').textContent = pending.length;
-  $('tilePolicy').textContent = policyLabel[S.settings.sharePolicy] || 'Ask every time';
+  $('tilePolicy').textContent = label(policyLabel, S.settings.sharePolicy, 'Ask every time');
   $('navBadge').hidden = pending.length === 0;
   $('navBadge').textContent = pending.length;
   $('endpointBanner').hidden = S.endpointConfigured;
@@ -76,7 +81,7 @@ function renderTiles() {
       <div class="row-icon crash">${ICONS.crash}</div>
       <div class="row-main">
         <div class="row-title">${esc(i.title)}</div>
-        <div class="row-sub">${fmtTime(i.at)} · ${fmtBytes(i.totalBytes)} · ${i.files.length} file${i.files.length === 1 ? '' : 's'}</div>
+        <div class="row-sub">${esc(fmtTime(i.at))} · ${esc(fmtBytes(i.totalBytes))} · ${files(i).length} file${files(i).length === 1 ? '' : 's'}</div>
       </div>
       <div class="row-actions">
         <button class="btn ghost sm" data-act="decline">Not now</button>
@@ -101,11 +106,11 @@ function renderEvents() {
       default: return ['info', e.type, ''];
     }
   };
-  el.innerHTML = S.events.slice(0, 25).map((e) => { const [k, t, s] = desc(e); return `
+  el.innerHTML = S.events.slice(0, 25).map((e) => { const [k, t, s] = desc(e); const icon = Object.hasOwn(ICONS, k) ? k : 'info'; return `
     <div class="row">
-      <div class="row-icon ${k}">${ICONS[k] || ICONS.info}</div>
+      <div class="row-icon ${icon}">${ICONS[icon]}</div>
       <div class="row-main"><div class="row-title">${esc(t)}</div>${s ? `<div class="row-sub">${esc(s)}</div>` : ''}</div>
-      <div class="row-time">${fmtTime(e.at)}</div>
+      <div class="row-time">${esc(fmtTime(e.at))}</div>
     </div>`; }).join('');
 }
 
@@ -114,8 +119,10 @@ function renderCaptures() {
   const el = $('captureList');
   if (!S.incidents.length) { el.innerHTML = '<div class="empty"><svg><use href="#ic-layers"/></svg>No captures yet.</div>'; return; }
   el.innerHTML = S.incidents.map((i) => {
-    const st = i.purged ? 'purged' : i.share.status;
-    const pct = i.share.pct != null ? ` ${i.share.pct}%` : '';
+    const share = i.share || {};
+    const st = i.purged ? 'purged' : String(share.status || '');
+    const pct = share.pct != null ? ` ${Number(share.pct) || 0}%` : '';
+    const cls = Object.hasOwn(statusLabel, st) ? st : 'unknown'; // class names only from the fixed set
     const actions = [];
     if (!i.purged && (st === 'pending' || st === 'failed' || st === 'declined' || st === 'local')) actions.push(`<button class="btn primary sm" data-act="review">${st === 'failed' ? 'Retry' : 'Share'}</button>`);
     if (!i.purged) actions.push('<button class="btn ghost sm" data-act="folder">Folder</button>');
@@ -127,9 +134,9 @@ function renderCaptures() {
         <div class="row-icon crash">${ICONS.crash}</div>
         <div class="row-main">
           <div class="row-title">${esc(i.title)}</div>
-          <div class="row-sub">${fmtTime(i.at)} · ${i.purged ? 'files removed' : fmtBytes(i.totalBytes)}${i.note ? ' · ' + esc(i.note) : ''}</div>
+          <div class="row-sub">${esc(fmtTime(i.at))} · ${i.purged ? 'files removed' : esc(fmtBytes(i.totalBytes))}${i.note ? ' · ' + esc(i.note) : ''}</div>
         </div>
-        <span class="status ${esc(st)}">${esc(statusLabel[st] || st)}${st === 'uploading' ? esc(pct) : ''}</span>
+        <span class="status ${cls}">${esc(label(statusLabel, st, st))}${st === 'uploading' ? esc(pct) : ''}</span>
         <div class="row-actions">${actions.join('')}</div>
       </div>
       <div class="capture-detail">
@@ -139,11 +146,11 @@ function renderCaptures() {
           ${g.playerPosition ? `<div class="kv"><span>Position</span><strong>${esc(g.playerPosition)}</strong></div>` : ''}
           ${g.memoryLoad ? `<div class="kv"><span>Memory load</span><strong>${esc(g.memoryLoad)}</strong></div>` : ''}
           ${i.reportId ? `<div class="kv"><span>FiveM report</span><strong>${esc(i.reportId)}</strong></div>` : ''}
-          ${i.share.ref ? `<div class="kv"><span>Server reference</span><strong>${esc(i.share.ref)}</strong></div>` : ''}
-          ${i.share.error ? `<div class="kv"><span>Error</span><strong>${esc(i.share.error)}</strong></div>` : ''}
+          ${share.ref ? `<div class="kv"><span>Server reference</span><strong>${esc(share.ref)}</strong></div>` : ''}
+          ${share.error ? `<div class="kv"><span>Error</span><strong>${esc(share.error)}</strong></div>` : ''}
         </div>
         ${i.message || i.stack?.length ? `<pre>${esc(i.message)}${i.message && i.stack?.length ? '\n\n' : ''}${esc((i.stack || []).join('\n'))}</pre>` : ''}
-        ${i.files.length ? `<pre>${i.files.map((f) => `${esc(f.name)}  (${fmtBytes(f.size)})`).join('\n')}</pre>` : ''}
+        ${files(i).length ? `<pre>${files(i).map((f) => `${esc(f && f.name)}  (${esc(fmtBytes(f && f.size))})`).join('\n')}</pre>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -172,7 +179,7 @@ function openConsent(id) {
   $('consentSig').textContent = i.title;
   $('consentMsg').hidden = !i.message;
   $('consentMsg').textContent = i.message || '';
-  $('consentFiles').innerHTML = i.files.map((f) => `<li><svg><use href="#ic-file"/></svg><code>${esc(f.name)}</code><span>${fmtBytes(f.size)}</span></li>`).join('') || '<li class="muted">No files</li>';
+  $('consentFiles').innerHTML = files(i).map((f) => `<li><svg><use href="#ic-file"/></svg><code>${esc(f && f.name)}</code><span>${esc(fmtBytes(f && f.size))}</span></li>`).join('') || '<li class="muted">No files</li>';
   $('consentNote').value = i.note || '';
   $('consentTag').value = S.settings.playerTag || '';
   $('consentAlways').checked = false;

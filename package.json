@@ -1,7 +1,7 @@
 {
   "name": "nullnetwork-diagnostics",
   "productName": "Nullnetwork Diagnostics",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Runs beside FiveM, captures crash dumps and other diagnostics, and shares them with the Nullnetwork team only when you say so.",
   "main": "src/main/main.js",
   "author": "Nullnetwork",

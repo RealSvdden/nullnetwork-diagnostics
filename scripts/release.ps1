@@ -9,8 +9,12 @@
     powershell -ExecutionPolicy Bypass -File scripts\release.ps1                # every release (bump version first)
 
   Flags:
-    -InitSecrets   generate + store DEVICE_MASTER_KEY and IP_SALT (re-running rotates them;
-                   every install then re-registers silently)
+    -InitSecrets      create DEVICE_MASTER_KEY and IP_SALT when they do not exist yet. Never
+                      overwrites: an existing secret is left alone (use the Rotate switches).
+    -RotateMasterKey  replace DEVICE_MASTER_KEY: every install re-registers on its next share.
+    -RotateIpSalt     replace IP_SALT: every stored IP hash stops matching, which lifts every
+                      revoke block (diag_revoked_ips) and resets the per-network registration
+                      counts. Rotate it only for that purpose, and separately from the key.
     -SkipWorker    don't redeploy the worker
     -SkipBuild     publish what is already in dist\
     -NoGitHub      skip the GitHub release
@@ -23,7 +27,7 @@
   (`npx wrangler login` inside worker\), and CLOUDFLARE_ACCOUNT_ID set if the login
   has access to more than one account.
 #>
-param([switch]$InitSecrets, [switch]$SkipWorker, [switch]$SkipBuild, [switch]$NoGitHub)
+param([switch]$InitSecrets, [switch]$RotateMasterKey, [switch]$RotateIpSalt, [switch]$SkipWorker, [switch]$SkipBuild, [switch]$NoGitHub)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $worker = Join-Path $root 'worker'
@@ -47,12 +51,30 @@ if (-not $SkipWorker) {
     Step 'Worker: bucket'
     $buckets = & node $wrangler r2 bucket list | Out-String
     if ($buckets -notmatch 'nullnetwork-diagnostics') { W @('r2','bucket','create','nullnetwork-diagnostics') } else { Write-Host 'bucket exists' }
-    if ($InitSecrets) {
+    if ($InitSecrets -or $RotateMasterKey -or $RotateIpSalt) {
       Step 'Worker: secrets'
-      $k1 = & node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
-      $k2 = & node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
-      $k1 | & node $wrangler secret put DEVICE_MASTER_KEY; if ($LASTEXITCODE -ne 0) { throw 'secret put DEVICE_MASTER_KEY failed' }
-      $k2 | & node $wrangler secret put IP_SALT;           if ($LASTEXITCODE -ne 0) { throw 'secret put IP_SALT failed' }
+      # The two secrets are rotated separately on purpose: a new IP_SALT silently lifts
+      # every revoke block and resets registration counts, a new DEVICE_MASTER_KEY only
+      # makes installs re-register. -InitSecrets never overwrites either.
+      function PutSecret($name, $bytes) {
+        $v = & node -e "console.log(require('crypto').randomBytes($bytes).toString('base64url'))"
+        $v | & node $wrangler secret put $name; if ($LASTEXITCODE -ne 0) { throw "secret put $name failed" }
+      }
+      if ($InitSecrets) {
+        $listed = & node $wrangler secret list --format json | Out-String
+        $existing = @()
+        try { $existing = @(($listed | ConvertFrom-Json) | ForEach-Object { $_.name }) } catch { throw "could not read the secret list (wrangler said: $listed); use -RotateMasterKey / -RotateIpSalt explicitly" }
+        if ($existing -contains 'DEVICE_MASTER_KEY') { Write-Host 'DEVICE_MASTER_KEY exists - left alone (use -RotateMasterKey to replace it)' } else { PutSecret 'DEVICE_MASTER_KEY' 48 }
+        if ($existing -contains 'IP_SALT') { Write-Host 'IP_SALT exists - left alone (use -RotateIpSalt to replace it)' } else { PutSecret 'IP_SALT' 32 }
+      }
+      if ($RotateMasterKey) {
+        Write-Host 'Rotating DEVICE_MASTER_KEY: every install re-registers on its next share.' -ForegroundColor Yellow
+        PutSecret 'DEVICE_MASTER_KEY' 48
+      }
+      if ($RotateIpSalt) {
+        Write-Host 'Rotating IP_SALT: every stored IP hash stops matching. This LIFTS EVERY REVOKE BLOCK in diag_revoked_ips and resets the per-network registration counts.' -ForegroundColor Yellow
+        PutSecret 'IP_SALT' 32
+      }
     }
     Step 'Worker: deploy'
     W @('deploy')

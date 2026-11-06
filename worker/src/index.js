@@ -30,6 +30,7 @@ const DAILY_BYTES = 512 * 1024 * 1024;
 const HOURLY_UPLOADS = 6;              // per device, counted from D1
 const HOURLY_REGISTRATIONS = 5;        // per IP bucket, counted from D1
 const REVOKE_BLOCK_SEC = 30 * 86400;   // a revoked install blocks its IP bucket from registering again for this long
+const REVOKED_BUCKETS_MAX = 3;         // buckets remembered per revoked install (registration + uploads + a few contacts)
 const BLOCKED_MSG = 'this install has been blocked from sharing';
 
 // name pattern -> { min/max bytes, how many leading bytes the content check needs, the check }
@@ -73,23 +74,37 @@ async function sha256(data) { return hex(await crypto.subtle.digest('SHA-256', t
 async function hmacKey(secret) { return crypto.subtle.importKey('raw', typeof secret === 'string' ? enc.encode(secret) : secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); }
 async function hmac(secret, msg) { return crypto.subtle.sign('HMAC', await hmacKey(secret), enc.encode(msg)); }
 function timingSafeEqual(a, b) { if (a.length !== b.length) return false; let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i); return r === 0; }
-const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : null);
+// User-supplied strings lose every C0/C1 control (nothing below 0x20 survives), DEL and
+// the bidi override/isolate characters, so a note or signature cannot carry a newline,
+// an escape sequence or right-to-left trickery into the database or the admin panel.
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+const clean = (s) => s.replace(CONTROL_RE, '');
+const str = (v, max) => (typeof v === 'string' ? clean(v).slice(0, max) : null);
+// Multi-line text (the crash message): line breaks survive as \n, each line is cleaned.
+const text = (v, max) => (typeof v === 'string' ? v.replace(/\r\n?/g, '\n').split('\n').map(clean).join('\n').slice(0, max) : null);
 const int = (v, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.round(Number(v)))) : null);
+const REPORT_ID = /^si-[0-9a-f]{1,40}$/;
 
 async function deviceSecret(env, deviceId) { return b64url(await hmac(env.DEVICE_MASTER_KEY, `device:${deviceId}`)); }
 
 // Every per-IP limit and every stored IP hash keys on a bucket, not the exact address:
 // IPv4 is the address itself (/32), IPv6 is its /64 prefix (the usual allocation to
 // one subscriber), so an IPv6 host cannot mint fresh identities by rotating the low bits.
-// IPv4-mapped IPv6 (::ffff:a.b.c.d) counts as the IPv4 address.
+// IPv4-mapped IPv6 (::ffff:a.b.c.d, ::ffff:a0b:c0d, 0:0:0:0:0:ffff:a.b.c.d) counts as the
+// IPv4 address: the string is expanded to eight hextets first, then classified.
+const V4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 function ipBucket(ip) {
   let raw = String(ip || '').trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0];
   if (!raw) return '';
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(raw)) return raw;
-  const mapped = /^(?:0*:)*:ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(raw);
-  if (mapped) return mapped[1];
+  if (V4.test(raw)) return raw.split('.').every((o) => Number(o) <= 255) ? raw : '';
   if (!raw.includes(':')) return raw;
-  // Expand :: so the first four hextets are known, then normalise each one.
+  // A trailing dotted quad folds into two hextets so one expansion covers every form.
+  const dq = /^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(raw);
+  if (dq) {
+    const o = dq[2].split('.').map(Number);
+    if (o.some((x) => x > 255)) return raw;
+    raw = `${dq[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
+  }
   const halves = raw.split('::');
   if (halves.length > 2) return raw;
   const left = halves[0] ? halves[0].split(':') : [];
@@ -97,7 +112,11 @@ function ipBucket(ip) {
   const fill = halves.length === 2 ? Math.max(0, 8 - left.length - right.length) : 0;
   const parts = [...left, ...Array(fill).fill('0'), ...right];
   if (parts.length !== 8 || parts.some((h) => !/^[0-9a-f]{1,4}$/.test(h))) return raw;
-  return `${parts.slice(0, 4).map((h) => parseInt(h, 16).toString(16)).join(':')}::/64`;
+  const n = parts.map((h) => parseInt(h, 16));
+  if (n[0] === 0 && n[1] === 0 && n[2] === 0 && n[3] === 0 && n[4] === 0 && n[5] === 0xffff) {
+    return `${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`;
+  }
+  return `${n.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
 }
 const clientBucket = (req) => ipBucket(req.headers.get('CF-Connecting-IP'));
 
@@ -111,6 +130,17 @@ async function ipHash(env, bucket) {
 async function rateLimit(binding, key) {
   if (!binding) return true; // local dev without the binding
   try { return (await binding.limit({ key })).success; } catch (err) { console.error('ratelimit binding failed', String(err)); return false; }
+}
+
+// Edge limit for every device route, run before any D1 work (so a loop of signed or
+// garbage requests costs nothing in the database). Keyed on the unauthenticated device
+// header AND the caller's bucket: a third party quoting a victim's device id from
+// another network only spends its own allowance.
+async function deviceEdgeLimit(req, env, binding, prefix) {
+  const dev = req.headers.get('X-NN-Device') || '';
+  if (!/^[0-9a-f]{32}$/.test(dev)) return deny(401, 'unsigned');
+  if (!(await rateLimit(binding, `${prefix}:${dev}:${clientBucket(req)}`))) return deny(429, 'slow down');
+  return null;
 }
 
 // Verify a signed request. Returns { device } or a Response to send.
@@ -130,12 +160,19 @@ async function authenticate(req, env, url, bodyHash) {
   if (device.revoked) {
     // The signature proved this is the revoked install, so remember the bucket it is
     // talking from: "reset install id" from the same network cannot register again
-    // (see register). The window is anchored at the revoke time, not at this contact.
-    const at = device.revoked_at || now();
-    await env.DB.batch([
-      env.DB.prepare('UPDATE diag_devices SET revoked_at = ?2 WHERE device_id = ?1 AND revoked_at IS NULL').bind(deviceId, at),
-      env.DB.prepare('INSERT OR IGNORE INTO diag_revoked_ips (ip_hash, device_id, revoked_at) VALUES (?1, ?2, ?3)').bind(await ipHash(env, clientBucket(req)), deviceId, at),
-    ]).catch((err) => console.error('revoked bucket record failed', String(err)));
+    // (see register). Bounded so a revoked install cannot block every network it can
+    // reach (VPN exits, CGNAT): at most REVOKED_BUCKETS_MAX buckets per device, the
+    // window stays anchored at the revoke time (revoked_at is filled once, never moved),
+    // and the edge limit above this call caps how often it can even try.
+    try {
+      const at = device.revoked_at || now();
+      const have = await env.DB.prepare('SELECT COUNT(*) AS n FROM diag_revoked_ips WHERE device_id = ?1').bind(deviceId).first();
+      const stmts = [env.DB.prepare('UPDATE diag_devices SET revoked_at = ?2 WHERE device_id = ?1 AND revoked_at IS NULL').bind(deviceId, at)];
+      if (!have || Number(have.n) < REVOKED_BUCKETS_MAX) {
+        stmts.push(env.DB.prepare('INSERT OR IGNORE INTO diag_revoked_ips (ip_hash, device_id, revoked_at) VALUES (?1, ?2, ?3)').bind(await ipHash(env, clientBucket(req)), deviceId, at));
+      }
+      await env.DB.batch(stmts);
+    } catch (err) { console.error('revoked bucket record failed', String(err)); }
     return deny(403, BLOCKED_MSG);
   }
 
@@ -147,16 +184,35 @@ async function authenticate(req, env, url, bodyHash) {
   return { device };
 }
 
-// Reads at most `limit` bytes of JSON.
+// Reads a JSON object body of at most `limit` bytes. The stream is read with a running
+// count and cancelled the moment it passes the limit (a chunked body without
+// Content-Length is never buffered whole); a Content-Length, when present, must be a
+// number within the limit. Only a plain object is accepted (not null, not an array).
 async function readJson(req, limit) {
-  const len = Number(req.headers.get('Content-Length') || 0);
-  if (len > limit) return null;
-  const buf = await req.arrayBuffer();
-  if (buf.byteLength > limit) return null;
-  try { return { raw: buf, value: JSON.parse(new TextDecoder().decode(buf)) }; } catch { return null; }
+  const lenHeader = req.headers.get('Content-Length');
+  if (lenHeader !== null && (!/^\d{1,12}$/.test(lenHeader.trim()) || Number(lenHeader) > limit)) return null;
+  if (!req.body) return null;
+  const reader = req.body.getReader();
+  const parts = []; let have = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    have += value.byteLength;
+    if (have > limit) { await reader.cancel().catch(() => {}); return null; }
+    parts.push(value);
+  }
+  const buf = new Uint8Array(have); let o = 0;
+  for (const p of parts) { buf.set(p, o); o += p.byteLength; }
+  let value;
+  try { value = JSON.parse(new TextDecoder().decode(buf)); } catch { return null; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return { raw: buf.buffer, value };
 }
 
-// Only known meta fields survive, each length-capped.
+// FiveM's crash report id, or null for anything else.
+function reportId(v) { const s = str(v, 64); return s && REPORT_ID.test(s.toLowerCase()) ? s.toLowerCase() : null; }
+
+// Only known meta fields survive, each length-capped and control-stripped.
 function sanitizeMeta(m) {
   if (!m || typeof m !== 'object') return null;
   const crash = m.crash && typeof m.crash === 'object' ? m.crash : {};
@@ -174,7 +230,7 @@ function sanitizeMeta(m) {
     app: { version: str(app.version, 32) },
     machine: { os: str(machine.os, 80), arch: str(machine.arch, 16), cpu: str(machine.cpu, 120), cores: int(machine.cores, 1024), ramGb: int(machine.ramGb, 4096) },
     session: { seconds: int(session.seconds, 10 ** 7), process: str(session.process, 80) },
-    crash: { signature: str(crash.signature, 300) || 'Unknown crash', message: str(crash.message, 4000) || '', stack, reportId: str(crash.reportId, 64) },
+    crash: { signature: str(crash.signature, 300) || 'Unknown crash', message: text(crash.message, 4000) || '', stack, reportId: reportId(crash.reportId) },
     game: Object.fromEntries(['gameVersion', 'gameState', 'sessionTime', 'playerPosition', 'gameTime', 'currentVehicle', 'memoryLoad', 'streamingVirtualUsed', 'peds'].map((k) => [k, str(game[k], 120)])),
     note: str(m.note, 600) || '',
     playerTag: str(m.playerTag, 64) || null,
@@ -222,12 +278,15 @@ function magicGate(body, rule) {
   }));
 }
 
+// Open captures well past their TTL: the uploaded objects are deleted, but the row stays
+// as 'expired' so it keeps counting toward the device's quotas. Deleting the row let a
+// declare-upload-abandon loop reset the daily caps every hour.
 async function pruneOpen(env) {
   const stale = await env.DB.prepare("SELECT ref, files_done FROM diag_captures WHERE status = 'open' AND created_at < ?1 LIMIT 20").bind(now() - 3600).all();
   for (const row of stale.results || []) {
     const done = JSON.parse(row.files_done || '[]');
     await Promise.all(done.map((n) => env.DIAG.delete(`captures/${row.ref}/${n}`)));
-    await env.DB.prepare('DELETE FROM diag_captures WHERE ref = ?1').bind(row.ref).run();
+    await env.DB.prepare("UPDATE diag_captures SET status = 'expired', files_done = '[]' WHERE ref = ?1 AND status = 'open'").bind(row.ref).run();
   }
 }
 
@@ -256,14 +315,17 @@ async function register(req, env) {
   return json({ ok: true, deviceId, secret: await deviceSecret(env, deviceId) });
 }
 
+// Order on every device route: edge limits -> body -> authenticate (signature, D1 lookup,
+// nonce write) -> quotas. Nothing reaches D1 until the edge limits pass.
 async function declare(req, env, url) {
+  const bucket = clientBucket(req);
+  const pre = await deviceEdgeLimit(req, env, env.RL_UPLOAD, 'up'); if (pre) return pre;
+  if (!(await rateLimit(env.RL_UPLOAD, `upip:${bucket}`))) return deny(429, 'too many uploads; try again later');
   const body = await readJson(req, MAX_JSON_BODY);
   if (!body) return deny(400, 'bad body');
   const auth = await authenticate(req, env, url, await sha256(body.raw));
   if (auth instanceof Response) return auth;
   const { device } = auth;
-  const bucket = clientBucket(req);
-  if (!(await rateLimit(env.RL_UPLOAD, `up:${device.device_id}`)) || !(await rateLimit(env.RL_UPLOAD, `upip:${bucket}`))) return deny(429, 'too many uploads; try again later');
 
   const meta = sanitizeMeta(body.value.meta);
   if (!meta) return deny(400, 'bad meta');
@@ -272,14 +334,14 @@ async function declare(req, env, url) {
   if (typeof files === 'string') return deny(400, files);
   const total = files.reduce((a, f) => a + f.size, 0);
 
-  // Hourly + daily quotas per device, counted from what was DECLARED (open or complete),
-  // so abandoning a capture after the PUTs cannot bypass the caps.
+  // Hourly + daily quotas per device, counted from what was DECLARED: open, expired and
+  // complete rows all count, so abandoning a capture after the PUTs cannot bypass the caps.
   const t0 = now();
   const usage = await env.DB.prepare(`SELECT
       SUM(CASE WHEN created_at > ?2 THEN 1 ELSE 0 END) AS hour_n,
       SUM(CASE WHEN created_at > ?3 THEN 1 ELSE 0 END) AS day_n,
       SUM(CASE WHEN created_at > ?3 THEN size_bytes ELSE 0 END) AS day_bytes
-    FROM diag_captures WHERE device_id = ?1 AND created_at > ?3`).bind(device.device_id, t0 - 3600, t0 - 86400).first();
+    FROM diag_captures WHERE device_id = ?1 AND created_at > ?3 AND status IN ('open', 'expired', 'complete')`).bind(device.device_id, t0 - 3600, t0 - 86400).first();
   if (usage && Number(usage.hour_n) >= HOURLY_UPLOADS) return deny(429, 'too many uploads this hour; try again later');
   if (usage && (Number(usage.day_n) >= DAILY_UPLOADS || Number(usage.day_bytes) + total > DAILY_BYTES)) return deny(429, 'daily sharing limit reached');
   const today = dayOf(t0);
@@ -308,13 +370,12 @@ async function loadOpen(env, ref, deviceId) {
   return { ...row, files: JSON.parse(row.files), filesDone: JSON.parse(row.files_done) };
 }
 
-// Shape checks + per-device burst limit that run before the nonce write, so a
-// loop of garbage requests costs nothing in D1.
+// Shape checks + edge limits for the file and complete routes: per device+bucket (tight)
+// and per bucket (looser, RL_FILES_NET), both before any D1 work.
 async function preflight(req, env, ref) {
   if (!/^\d{8}-[0-9a-f]{12}$/.test(ref)) return deny(404, 'no open capture');
-  const dev = req.headers.get('X-NN-Device') || '';
-  if (!/^[0-9a-f]{32}$/.test(dev)) return deny(401, 'unsigned');
-  if (!(await rateLimit(env.RL_FILES, `file:${dev}`))) return deny(429, 'slow down');
+  const pre = await deviceEdgeLimit(req, env, env.RL_FILES, 'file'); if (pre) return pre;
+  if (!(await rateLimit(env.RL_FILES_NET, `filenet:${clientBucket(req)}`))) return deny(429, 'slow down');
   return null;
 }
 
@@ -438,22 +499,41 @@ async function serveUpdate(req, env, file) {
   return new Response(req.method === 'HEAD' ? null : obj.body, { status: range ? 206 : 200, headers });
 }
 
+// The download page: rate limited per bucket, then served from the edge cache (one entry
+// for every alias, kept for the page's own max-age) so a hit costs no R2 read.
+async function servePage(req, env, ctx, url) {
+  if (!(await rateLimit(env.RL_PUBLIC, `page:${clientBucket(req)}`))) return plain('slow down', 429);
+  const cache = caches.default;
+  const key = new Request(`${url.origin}/`, { method: 'GET' });
+  let res = await cache.match(key);
+  if (!res) {
+    res = await downloadPage(env);
+    if (res.status === 200) ctx.waitUntil(cache.put(key, res.clone()));
+  }
+  return req.method === 'HEAD' ? new Response(null, res) : res;
+}
+
+const decode = (s) => { try { return decodeURIComponent(s); } catch { return null; } };
+
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const p = url.pathname;
     if (!env.DEVICE_MASTER_KEY || !env.IP_SALT) return deny(503, 'not configured');
     try {
       if (p === '/health') return plain('ok', 200);
-      if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/' || p === '/diagnostics' || p === '/download')) return downloadPage(env);
+      if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/' || p === '/diagnostics' || p === '/download')) return servePage(req, env, ctx, url);
       if ((req.method === 'GET' || req.method === 'HEAD') && p.startsWith('/v1/update/')) {
-        let file; try { file = decodeURIComponent(p.slice('/v1/update/'.length)); } catch { return new Response('not found', { status: 404 }); }
-        return serveUpdate(req, env, file);
+        const file = decode(p.slice('/v1/update/'.length));
+        return file === null ? plain('not found', 404) : serveUpdate(req, env, file);
       }
       if (req.method === 'POST' && p === '/v1/register') return register(req, env);
       if (req.method === 'POST' && p === '/v1/capture') return declare(req, env, url);
       let m;
-      if (req.method === 'PUT' && (m = /^\/v1\/capture\/([^/]+)\/file\/([^/]+)$/.exec(p))) return putFile(req, env, url, m[1], decodeURIComponent(m[2]));
+      if (req.method === 'PUT' && (m = /^\/v1\/capture\/([^/]+)\/file\/([^/]+)$/.exec(p))) {
+        const name = decode(m[2]);
+        return name === null ? deny(404, 'not found') : putFile(req, env, url, m[1], name);
+      }
       if (req.method === 'POST' && (m = /^\/v1\/capture\/([^/]+)\/complete$/.exec(p))) return complete(req, env, url, m[1]);
       return deny(404, 'not found');
     } catch (err) {

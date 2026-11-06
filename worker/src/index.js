@@ -32,11 +32,13 @@ const HOURLY_REGISTRATIONS = 5;        // per IP bucket, counted from D1
 const REVOKE_BLOCK_SEC = 30 * 86400;   // a revoked install blocks its IP bucket from registering again for this long
 const BLOCKED_MSG = 'this install has been blocked from sharing';
 
-// name pattern -> { max bytes, magic check }
+// name pattern -> { min/max bytes, how many leading bytes the content check needs, the check }
+// The check runs once `scan` bytes have streamed (or at end of a shorter body).
+const TEXT_SCAN = 64 * 1024;
 const FILE_RULES = [
-  { re: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.dmp$/i, max: 96 * 1024 * 1024, magic: (b) => b.length >= 4 && b[0] === 0x4d && b[1] === 0x44 && b[2] === 0x4d && b[3] === 0x50, type: 'application/octet-stream' },
-  { re: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.dmp\.gamelog$/i, max: 4 * 1024 * 1024, magic: (b) => isText(b), type: 'text/plain' },
-  { re: /^CitizenFX\.log\.gz$/, max: 24 * 1024 * 1024, magic: (b) => b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b, type: 'application/gzip' },
+  { re: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.dmp$/i, min: 64 * 1024, max: 96 * 1024 * 1024, scan: 32, magic: isMinidump, type: 'application/octet-stream' },
+  { re: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.dmp\.gamelog$/i, min: 1, max: 4 * 1024 * 1024, scan: TEXT_SCAN, magic: isText, type: 'text/plain' },
+  { re: /^CitizenFX\.log\.gz$/, min: 20, max: 24 * 1024 * 1024, scan: 10, magic: isGzip, type: 'application/gzip' },
 ];
 const UPDATE_FILE = /^(latest\.yml|[A-Za-z0-9][A-Za-z0-9._ -]{0,120}\.(exe|blockmap|zip))$/;
 const MODULES = new Set(['crash']);
@@ -50,7 +52,22 @@ const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart
 const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const now = () => Math.floor(Date.now() / 1000);
 const dayOf = (t) => Math.floor(t / 86400);
-function isText(b) { for (let i = 0; i < Math.min(b.length, 512); i++) { const c = b[i]; if (c === 0 || (c < 32 && c !== 9 && c !== 10 && c !== 13)) return false; } return true; }
+// Text: no NUL anywhere in the first 64 KiB (any binary, UTF-16 included, has one), and
+// no control characters other than tab/LF/CR in the first 512 bytes.
+function isText(b) {
+  const n = Math.min(b.length, TEXT_SCAN);
+  for (let i = 0; i < n; i++) { const c = b[i]; if (c === 0 || (i < 512 && c < 32 && c !== 9 && c !== 10 && c !== 13)) return false; }
+  return true;
+}
+const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+// MINIDUMP_HEADER: 'MDMP', Version low word 0xA793, at least one stream, directory past the header.
+function isMinidump(b) {
+  return b.length >= 32 && b[0] === 0x4d && b[1] === 0x44 && b[2] === 0x4d && b[3] === 0x50
+    && b[4] === 0x93 && b[5] === 0xa7
+    && u32(b, 8) >= 1 && u32(b, 8) <= 4096 && u32(b, 12) >= 32;
+}
+// RFC 1952 header: ID1 ID2, CM = 8 (deflate), reserved FLG bits clear.
+function isGzip(b) { return b.length >= 10 && b[0] === 0x1f && b[1] === 0x8b && b[2] === 0x08 && (b[3] & 0xe0) === 0; }
 function randomHex(n) { const a = new Uint8Array(n); crypto.getRandomValues(a); return hex(a); }
 async function sha256(data) { return hex(await crypto.subtle.digest('SHA-256', typeof data === 'string' ? enc.encode(data) : data)); }
 async function hmacKey(secret) { return crypto.subtle.importKey('raw', typeof secret === 'string' ? enc.encode(secret) : secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); }
@@ -174,6 +191,7 @@ function validateManifest(files) {
     const rule = FILE_RULES.find((r) => r.re.test(name));
     if (!rule) return `file not allowed: ${name}`;
     if (size > rule.max) return `file too large: ${name}`;
+    if (size < rule.min) return `file too small: ${name}`;
     if (seen.has(name)) return 'duplicate file'; seen.add(name);
     total += size; out.push({ name, size, sha256: sha });
   }
@@ -181,18 +199,26 @@ function validateManifest(files) {
   return out;
 }
 
-// Pass-through stream that checks the first bytes against the rule's magic.
+// Pass-through stream that runs the rule's content check on the first `scan` bytes
+// (or on the whole body when it is shorter). Bytes already forwarded land in R2, but
+// a failed check makes the PUT fail and the object is deleted.
 function magicGate(body, rule) {
-  let head = new Uint8Array(0); let checked = false;
+  const parts = []; let have = 0; let checked = false;
+  const check = () => {
+    const head = new Uint8Array(have); let o = 0;
+    for (const c of parts) { head.set(c, o); o += c.length; }
+    checked = true; parts.length = 0;
+    if (!rule.magic(head)) throw new Error('magic');
+  };
   return body.pipeThrough(new TransformStream({
     transform(chunk, ctrl) {
       if (!checked) {
-        const merged = new Uint8Array(head.length + chunk.length); merged.set(head); merged.set(chunk, head.length); head = merged;
-        if (head.length >= 8) { checked = true; if (!rule.magic(head)) throw new Error('magic'); }
+        parts.push(chunk); have += chunk.length;
+        if (have >= rule.scan) check();
       }
       ctrl.enqueue(chunk);
     },
-    flush() { if (!checked && !rule.magic(head)) throw new Error('magic'); },
+    flush() { if (!checked) check(); },
   }));
 }
 

@@ -19,21 +19,36 @@ class Device {
 
   load() {
     if (this.cache) return this.cache;
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      let secret = null;
-      const enc = safeStorage.isEncryptionAvailable();
-      if (raw.secretEnc && enc) secret = safeStorage.decryptString(Buffer.from(raw.secretEnc, 'base64'));
-      else if (raw.secretPlain && !enc) secret = raw.secretPlain; // plaintext is only honoured where no keychain exists
-      if (raw.deviceId && secret) this.cache = { deviceId: raw.deviceId, secret, endpoint: raw.endpoint, createdAt: raw.createdAt };
-    } catch { /* no device yet */ }
+    let raw;
+    try { raw = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { return null; /* no device yet */ }
+    if (!raw || typeof raw !== 'object') return null;
+    let secret = null;
+    if (safeStorage.isEncryptionAvailable()) {
+      // The OS keychain is available, so only the encrypted secret counts. A plaintext
+      // copy (left by an earlier run on a host without a keychain, or put there by hand)
+      // is ignored and removed from disk; if no encrypted secret remains the install
+      // simply registers again.
+      if (raw.secretPlain !== undefined) {
+        delete raw.secretPlain;
+        try { if (raw.secretEnc) fs.writeFileSync(this.file, JSON.stringify(raw, null, 2)); else fs.unlinkSync(this.file); } catch { /* best effort */ }
+      }
+      if (typeof raw.secretEnc === 'string') {
+        try { secret = safeStorage.decryptString(Buffer.from(raw.secretEnc, 'base64')); } catch { secret = null; /* corrupt or from another user profile */ }
+      }
+    } else if (typeof raw.secretPlain === 'string') {
+      // Plaintext is accepted only here: safeStorage reports that encryption is genuinely
+      // unavailable on this host (no DPAPI / keychain / secret service for this session).
+      // The secret is still per-install and can still be revoked server side.
+      secret = raw.secretPlain;
+    }
+    if (typeof raw.deviceId === 'string' && secret) this.cache = { deviceId: raw.deviceId, secret, endpoint: raw.endpoint, createdAt: raw.createdAt };
     return this.cache;
   }
 
   save(dev) {
     const out = { deviceId: dev.deviceId, endpoint: dev.endpoint, createdAt: dev.createdAt };
     if (safeStorage.isEncryptionAvailable()) out.secretEnc = safeStorage.encryptString(dev.secret).toString('base64');
-    else out.secretPlain = dev.secret; // only on hosts without a keychain; still per-install, still revocable
+    else out.secretPlain = dev.secret; // only when the OS keychain is genuinely unavailable (see load); still per-install, still revocable
     fs.writeFileSync(this.file, JSON.stringify(out, null, 2));
     this.cache = dev;
   }

@@ -353,28 +353,63 @@ async function complete(req, env, url, ref) {
   return json({ ok: true, id: ref });
 }
 
+const plain = (body, status) => new Response(body, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+
+// One byte range (RFC 9110 14.1.2) against a known size. Returns { offset, length },
+// null when the header is absent or must be ignored (other unit, several ranges,
+// malformed, end before start: the whole file is served with 200), or 'unsatisfiable'.
+// A suffix range (bytes=-N) is the last min(N, size) bytes; bytes=-0 is unsatisfiable.
+function parseRange(header, size) {
+  if (!header) return null;
+  const m = /^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i.exec(header);
+  if (!m || (m[1] === '' && m[2] === '')) return null;
+  const a = m[1] === '' ? null : Number(m[1]);
+  const b = m[2] === '' ? null : Number(m[2]);
+  if ((a !== null && !Number.isSafeInteger(a)) || (b !== null && !Number.isSafeInteger(b))) return null;
+  if (a === null) {
+    if (b === 0 || size === 0) return 'unsatisfiable';
+    const length = Math.min(b, size);
+    return { offset: size - length, length };
+  }
+  if (a >= size) return 'unsatisfiable';
+  const end = b === null ? size - 1 : Math.min(b, size - 1);
+  if (end < a) return null;
+  return { offset: a, length: end - a + 1 };
+}
+
 async function serveUpdate(req, env, file) {
-  if (!UPDATE_FILE.test(file)) return new Response('not found', { status: 404 });
-  if (!(await rateLimit(env.RL_PUBLIC, `upd:${clientBucket(req)}`))) return new Response('slow down', { status: 429 });
-  const ranged = req.headers.has('Range');
-  const obj = await env.DIAG.get(`releases/${file}`, ranged ? { range: req.headers, onlyIf: req.headers } : { onlyIf: req.headers });
-  if (!obj) return new Response('not found', { status: 404 });
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set('ETag', obj.httpEtag);
-  headers.set('Accept-Ranges', 'bytes');
-  if (ranged && obj.range) {
-    const r = obj.range;
-    const start = r.suffix != null ? Math.max(0, obj.size - r.suffix) : (r.offset || 0);
-    const end = r.suffix != null ? obj.size - 1 : (r.length ? start + r.length - 1 : obj.size - 1);
-    headers.set('Content-Range', `bytes ${start}-${end}/${obj.size}`);
-    headers.set('Content-Length', String(end - start + 1));
-  } else headers.set('Content-Length', String(obj.size));
-  headers.set('Cache-Control', file === 'latest.yml' ? 'public, max-age=60' : 'public, max-age=3600');
-  headers.set('X-Content-Type-Options', 'nosniff');
+  if (!UPDATE_FILE.test(file)) return plain('not found', 404);
+  if (!(await rateLimit(env.RL_PUBLIC, `upd:${clientBucket(req)}`))) return plain('slow down', 429);
+  const key = `releases/${file}`;
+  const head = await env.DIAG.head(key);
+  if (!head) return plain('not found', 404);
+  const isYml = file.endsWith('.yml');
+  // Content-Type is fixed by extension, never taken from the object: latest.yml is text,
+  // everything else is an opaque download. Installers are versioned names, so immutable.
+  const headers = new Headers({
+    'Accept-Ranges': 'bytes',
+    'ETag': head.httpEtag,
+    'Last-Modified': head.uploaded.toUTCString(),
+    'Content-Type': isYml ? 'text/yaml; charset=utf-8' : 'application/octet-stream',
+    'Cache-Control': isYml ? 'public, max-age=60, must-revalidate' : 'public, max-age=3600, immutable',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  if (!isYml) headers.set('Content-Disposition', `attachment; filename="${file}"`);
+  const range = parseRange(req.headers.get('Range'), head.size);
+  if (range === 'unsatisfiable') { headers.set('Content-Range', `bytes */${head.size}`); return new Response(null, { status: 416, headers }); }
+
+  // Only the two cache validators are honoured; If-Match failing would need a 412, not a 304.
+  const onlyIf = new Headers();
+  for (const h of ['If-None-Match', 'If-Modified-Since']) if (req.headers.has(h)) onlyIf.set(h, req.headers.get(h));
+  const obj = await env.DIAG.get(key, { onlyIf, ...(range ? { range } : {}) });
+  if (!obj) return plain('not found', 404);
   if (!('body' in obj)) return new Response(null, { status: 304, headers });
-  if (file.endsWith('.yml')) headers.set('Content-Type', 'text/yaml');
-  return new Response(req.method === 'HEAD' ? null : obj.body, { status: ranged && obj.range ? 206 : 200, headers });
+  if (obj.size !== head.size || obj.httpEtag !== head.httpEtag) return plain('release changed, try again', 503); // re-uploaded between head and get
+  if (range) {
+    headers.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${head.size}`);
+    headers.set('Content-Length', String(range.length));
+  } else headers.set('Content-Length', String(head.size));
+  return new Response(req.method === 'HEAD' ? null : obj.body, { status: range ? 206 : 200, headers });
 }
 
 export default {
@@ -383,7 +418,7 @@ export default {
     const p = url.pathname;
     if (!env.DEVICE_MASTER_KEY || !env.IP_SALT) return deny(503, 'not configured');
     try {
-      if (p === '/health') return new Response('ok', { headers: { 'Cache-Control': 'no-store' } });
+      if (p === '/health') return plain('ok', 200);
       if ((req.method === 'GET' || req.method === 'HEAD') && (p === '/' || p === '/diagnostics' || p === '/download')) return downloadPage(env);
       if ((req.method === 'GET' || req.method === 'HEAD') && p.startsWith('/v1/update/')) {
         let file; try { file = decodeURIComponent(p.slice('/v1/update/'.length)); } catch { return new Response('not found', { status: 404 }); }

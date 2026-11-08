@@ -251,21 +251,21 @@ function renderSettings() {
 function renderUpdate() {
   const u = S.update || { status: 'idle' };
   const bar = $('updateBar');
-  const show = u.status === 'available' || u.status === 'downloading' || u.status === 'ready';
+  const show = u.status === 'downloading' || u.status === 'ready' || u.status === 'installing';
   bar.hidden = !show;
   if (show) {
-    $('updateTitle').textContent = u.status === 'ready' ? `Version ${u.version} is ready to install` : `Version ${u.version} is available`;
-    $('updateSub').textContent = u.status === 'downloading' ? `Downloading ${u.pct}%` : u.status === 'ready' ? 'Restart Nullnetwork Diagnostics to finish the update.' : 'Would you like to update now? It takes under a minute.';
+    $('updateTitle').textContent = u.status === 'installing' ? `Restarting into version ${u.version}` : u.status === 'ready' ? `Version ${u.version} is ready` : `Updating to version ${u.version}`;
+    $('updateSub').textContent = u.status === 'downloading' ? `Downloading ${u.pct}%` : u.status === 'installing' ? 'Back in a few seconds.' : u.waiting ? 'Waiting for the current share to finish, then restarting.' : 'Restarting to finish the update.';
     $('updateProgress').hidden = u.status !== 'downloading';
     $('updateBarFill').style.width = (u.pct || 0) + '%';
-    $('updateGo').hidden = u.status === 'downloading';
-    $('updateGo').textContent = u.status === 'ready' ? 'Restart and update' : 'Update now';
-    $('updateLater').hidden = u.status === 'downloading';
+    $('updateGo').hidden = u.status !== 'ready' || !u.waiting;
+    $('updateGo').textContent = 'Restart now';
+    $('updateLater').hidden = true;
   }
   const label = { disabled: 'Updates are only checked in installed builds', idle: 'Not checked yet', checking: 'Checking…', none: 'Up to date', available: `Version ${u.version} available`, downloading: `Downloading ${u.pct}%`, ready: `Version ${u.version} ready to install`, error: `Could not check: ${u.error || 'unknown error'}` }[u.status] || u.status;
   $('updateStatus').textContent = label;
 }
-$('updateGo').addEventListener('click', () => { const u = S.update || {}; if (u.status === 'ready') api.invoke('update:install'); else api.invoke('update:download'); });
+$('updateGo').addEventListener('click', () => api.invoke('update:install'));
 $('updateLater').addEventListener('click', () => { $('updateBar').hidden = true; });
 $('checkUpdateBtn').addEventListener('click', async () => { S.update = await api.invoke('update:check'); renderUpdate(); });
 $('resetDeviceBtn').addEventListener('click', async () => { await api.invoke('device:reset'); S.device = null; renderSettings(); });

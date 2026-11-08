@@ -319,8 +319,13 @@ ipcMain.handle('device:reset', () => { device.forget(); return null; });
 app.whenReady().then(() => {
   store = new Store();
   device = new Device(store);
-  updater = new Updater({ store });
-  updater.on('state', (st) => { broadcast('update:state', st); if (st.status === 'available') { notify('Update available', `Nullnetwork Diagnostics ${st.version} is ready to install. Open the app to update.`, true); } });
+  // The updater restarts the app on its own, but never while a share is uploading
+  // or a crash from the last ten minutes is still waiting for the player's answer.
+  const isBusy = () => store.history.incidents.some((i) => i.share && (i.share.status === 'uploading'
+    || (i.share.status === 'pending' && Date.now() - Date.parse(i.at || 0) < 10 * 60 * 1000)));
+  updater = new Updater({ store, isBusy });
+  updater.on('state', (st) => broadcast('update:state', st));
+  updater.on('installing', (st) => notify('Updating Nullnetwork Diagnostics', `Restarting into version ${st.version}. Back in a few seconds.`));
   startModules();
   purgeOld();
   createWindow();

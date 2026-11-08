@@ -12,6 +12,7 @@ Crash capture is the first module. The main process is a module host, so later c
 2. When a dump appears it waits for FiveM to finish writing it (and the `.dmp.gamelog` beside it), then copies both into a capture folder, gzips the current `CitizenFX_log_*.log` next to them, and writes `report.json`: the crash signature, message and stack parsed from the log's `Process crash captured` block, the FiveM `si-...` report id, a few vitals from the gamelog, and OS / CPU / RAM. A source file over 1 GiB (or a CitizenFX log over 256 MiB) is skipped and named in the report, and one capture never copies more than 1.25 GiB.
 3. Shows a notification and a consent dialog listing exactly what was saved and what sharing sends, with an optional note ("what were you doing?") and name.
 4. On yes, uploads through the signed protocol below with a progress bar. Failures stay retryable from the Captures view. "Always share" and "Never share" are settings.
+5. Keeps itself current: a newer release is downloaded in the background and installed automatically (see Updates).
 
 Captures live in `%APPDATA%\Nullnetwork Diagnostics\captures\<timestamp>_<dumpid>\`. Reports you shared or declined are deleted after `keepDays` (default 14); pending ones are kept.
 
@@ -74,7 +75,7 @@ The worker in `worker/` is everything the app talks to. It is designed so that n
 
 ## Updates
 
-Installed builds check `<shareEndpoint>/v1/update/latest.yml` 15 s after launch and every 6 hours. A newer version shows a banner and a notification; nothing downloads until you click **Update now**, and the restart is a second explicit click. The updater verifies the installer's SHA-512 against `latest.yml`. The same installer and `latest.yml` are attached to each GitHub release so you can compare hashes.
+Updates are automatic. Installed builds check `<shareEndpoint>/v1/update/latest.yml` on every launch and every 6 hours; a newer version downloads in the background and the app restarts into it on its own, with a notification, as soon as nothing is in flight (no share uploading, no crash from the last ten minutes still waiting for your answer). The updater verifies the installer's SHA-512 against `latest.yml` before it runs, and the feed is pinned to the baked-in https endpoint. The same installer and `latest.yml` are attached to each GitHub release so you can compare hashes.
 
 ## Releasing (maintainers)
 
